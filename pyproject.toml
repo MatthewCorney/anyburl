@@ -1,0 +1,91 @@
+[project]
+name = "anyburl"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "MatthewCorney", email = "Matthew_corney@yahoo.co.uk"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["anyburl", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "SIM",    # flake8-simplify
+    "TC",     # flake8-type-checking
+    "RUF",    # ruff-specific
+    "S",      # flake8-bandit (security)
+    "C4",     # flake8-comprehensions
+    "PT",     # flake8-pytest-style
+    "RET",    # flake8-return
+    "ARG",    # flake8-unused-arguments
+    "PL",     # pylint subset
+    "D",      # pydocstyle
+]
+ignore = [
+    "D100",   # Missing docstring in public module
+    "D104",   # Missing docstring in public package
+    "D203",   # Conflicts with D211 (no blank line before class docstring)
+    "D213",   # Conflicts with D212 (summary on first line)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "D", "ARG", "PLR2004"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["anyburl"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+show_error_codes = true
+show_error_context = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-v"]
+filterwarnings = ["error"]
