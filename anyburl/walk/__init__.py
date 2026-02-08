@@ -1,5 +1,6 @@
 """Random walk submodule for AnyBURL."""
 
-from anyburl.walk.config import WalkConfig
+from .config import WalkConfig, WalkStrategy
+from .walker import WalkEngine
 
-__all__ = ["WalkConfig"]
+__all__ = ["WalkConfig", "WalkEngine", "WalkStrategy"]

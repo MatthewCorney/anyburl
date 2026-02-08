@@ -1,20 +1,46 @@
 """Horn rule representation, configuration, and generalization."""
 
-from __future__ import annotations
-
-import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from enum import Enum, StrEnum, auto
+from typing import assert_never
 
-from anyburl.enums import RuleType, TermKind
-from anyburl.exceptions import RuleGeneralizationError
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+class RuleType(StrEnum):
+    """Classification of learned Horn rules by structural type.
 
-logger = logging.getLogger(__name__)
+    Attributes
+    ----------
+    AC1 : str
+        Acyclic rule with one free variable. One head variable is grounded
+        as a constant; the other appears in the body.
+    AC2 : str
+        Acyclic rule with two free variables. One head variable does not
+        appear in the body at all.
+    CYCLIC : str
+        Cyclic rule. Both head variables appear in the body, forming a
+        closed variable chain.
+    """
 
-__all__ = ["Atom", "Rule", "RuleConfig", "RuleGeneralizer", "Term"]
+    AC1 = "ac1"
+    AC2 = "ac2"
+    CYCLIC = "cyclic"
+
+
+class TermKind(Enum):
+    """Whether a term in an atom is a variable or a grounded constant.
+
+    Attributes
+    ----------
+    VARIABLE : int
+        A placeholder that can bind to any entity during rule application.
+    CONSTANT : int
+        A specific, fixed entity from the knowledge graph.
+    """
+
+    VARIABLE = auto()
+    CONSTANT = auto()
+
 
 # Variable name constants for rule generalization
 SUBJECT_VARIABLE: str = "X"
@@ -70,9 +96,11 @@ class Term:
                     raise ValueError("CONSTANT term must have an entity_id")
                 if self.name is not None:
                     raise ValueError("CONSTANT term must not have a name")
+            case _ as unreachable:
+                assert_never(unreachable)
 
     @staticmethod
-    def variable(name: str, *, node_type: str) -> Term:
+    def variable(name: str, *, node_type: str) -> "Term":
         """Create a variable term.
 
         Parameters
@@ -90,7 +118,7 @@ class Term:
         return Term(kind=TermKind.VARIABLE, node_type=node_type, name=name)
 
     @staticmethod
-    def constant(entity_id: int, *, node_type: str) -> Term:
+    def constant(entity_id: int, *, node_type: str) -> "Term":
         """Create a constant (grounded) term.
 
         Parameters
@@ -114,6 +142,8 @@ class Term:
                 return str(self.name)
             case TermKind.CONSTANT:
                 return f"{self.node_type}:{self.entity_id}"
+            case _ as unreachable:
+                assert_never(unreachable)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,9 +167,28 @@ class Atom:
     subject: Term
     object_: Term
 
+    @property
+    def edge_signature(self) -> tuple[str, str, str]:
+        """Return the typed edge signature of this atom.
+
+        Returns
+        -------
+        tuple[str, str, str]
+            ``(subject_node_type, relation, object_node_type)`` triple that
+            uniquely identifies the edge type in a heterogeneous graph.
+        """
+        return (self.subject.node_type, self.relation, self.object_.node_type)
+
     def __str__(self) -> str:
-        """Return human-readable representation like ``born_in(X, Y)``."""
-        return f"{self.relation}({self.subject}, {self.object_})"
+        """Return human-readable representation like ``person_born_in_city(X, Y)``.
+
+        The relation display includes source and destination node types
+        to disambiguate edges in heterogeneous graphs where the raw
+        relation string (e.g. ``"to"``) may be shared across edge types.
+        """
+        src_type = self.subject.node_type
+        dst_type = self.object_.node_type
+        return f"{src_type}_{self.relation}_{dst_type}({self.subject}, {self.object_})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +231,23 @@ class Rule:
             if atom.object_.kind is TermKind.VARIABLE:
                 names.add(str(atom.object_.name))
         return frozenset(names)
+
+    @property
+    def is_tautological(self) -> bool:
+        """Check whether the rule is tautological.
+
+        A rule is tautological when any body atom has the same edge
+        signature (subject type, relation, object type) as the head.
+        Such rules are trivially satisfied because the body can always
+        be grounded to the head triple itself.
+
+        Returns
+        -------
+        bool
+            ``True`` if the rule is tautological.
+        """
+        head_sig = self.head.edge_signature
+        return any(atom.edge_signature == head_sig for atom in self.body)
 
     @property
     def constants(self) -> frozenset[tuple[int, str]]:
@@ -304,11 +370,11 @@ class RuleGeneralizer:
 
         Raises
         ------
-        RuleGeneralizationError
+        ValueError
             If the path structure is fundamentally invalid.
         """
         if len(path) < 1:
-            raise RuleGeneralizationError("Path must contain at least one step")
+            raise ValueError("Path must contain at least one step")
 
         ctx = _GeneralizationContext(
             variable_map=self._assign_variables(path, head_type=head_type),
@@ -325,7 +391,7 @@ class RuleGeneralizer:
                 self._create_ac1_rule(path, ctx, ground_subject=ground_subject)
             )
 
-        return rules
+        return [r for r in rules if not r.is_tautological]
 
     @staticmethod
     def classify_rule(head: Atom, body: tuple[Atom, ...]) -> RuleType:

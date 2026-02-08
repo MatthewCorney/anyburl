@@ -1,27 +1,67 @@
-"""AnyBURL: Anytime Bottom-Up Rule Learning for knowledge graphs."""
+"""AnyBURL: Anytime Bottom-Up Rule Learning for knowledge graphs.
 
-from anyburl.enums import RuleType, SamplingStrategy, TermKind, WalkStrategy
-from anyburl.exceptions import (
-    AnyBURLError,
-    GraphStructureError,
-    InsufficientDataError,
-    RuleGeneralizationError,
-)
-from anyburl.metrics import MetricsConfig, RuleEvaluator, RuleMetrics
-from anyburl.rule import Atom, Rule, RuleConfig, RuleGeneralizer, Term
-from anyburl.sampler import SamplerConfig
-from anyburl.walk import WalkConfig
+This package implements the AnyBURL algorithm for learning first-order
+Horn rules from heterogeneous knowledge graphs backed by PyTorch Geometric.
+
+Algorithm Pipeline
+------------------
+The learning process follows four stages:
+
+1. **Sample** --- :class:`TripleSampler` draws target triples from the
+   graph according to a :class:`SamplingStrategy` (uniform, relation-
+   proportional, or inverse-frequency weighted).
+
+2. **Walk** --- :class:`WalkEngine` performs bounded random walks from
+   each sampled triple's head entity, searching for paths that reach
+   the tail entity. Successful paths are returned as sequences of
+   :class:`~anyburl.rule.PathStep`.
+
+3. **Generalize** --- :class:`RuleGeneralizer` replaces concrete
+   entities in each path with variables, producing typed Horn rules.
+   Each path yields up to three :class:`Rule` variants:
+
+   * **Cyclic** -- both head variables appear in the body chain.
+   * **AC1** -- one head variable is grounded as a constant.
+   * **AC2** -- one head variable is absent from the body entirely.
+
+4. **Evaluate** --- :class:`RuleEvaluator` scores each rule via sparse
+   CSR matrix multiplication against the graph, computing support,
+   confidence, and head coverage (:class:`RuleMetrics`).
+
+Module Layout
+-------------
+``graph``
+    :class:`HeteroGraph` wraps PyG ``HeteroData`` with precomputed CSR
+    indices for O(1) neighbor lookup and sparse matmul.
+``sampler``
+    :class:`TripleSampler` and :class:`SamplerConfig`.
+``walk``
+    :class:`WalkEngine` and :class:`WalkConfig`.
+``rule``
+    :class:`Rule`, :class:`Atom`, :class:`Term`, :class:`RuleGeneralizer`,
+    and :class:`RuleConfig`.
+``metrics``
+    :class:`RuleEvaluator` and :class:`RuleMetrics`.
+
+References
+----------
+.. [1] Meilicke, C., Chekol, M. W., Ruffinelli, D., & Stuckenschmidt, H.
+   (2019). Anytime Bottom-Up Rule Learning for Knowledge Graph Completion.
+   *IJCAI*.
+"""
+
+from .graph import HeteroGraph
+from .metrics import RuleEvaluator, RuleMetrics, aggregate_confidence
+from .rule import Atom, Rule, RuleConfig, RuleGeneralizer, RuleType, Term, TermKind
+from .sampler import SamplerConfig, SamplingStrategy, Triple, TripleSampler
+from .walk import WalkConfig, WalkEngine, WalkStrategy
 
 __all__ = [
-    "AnyBURLError",
     "Atom",
-    "GraphStructureError",
-    "InsufficientDataError",
-    "MetricsConfig",
+    "HeteroGraph",
     "Rule",
     "RuleConfig",
     "RuleEvaluator",
-    "RuleGeneralizationError",
     "RuleGeneralizer",
     "RuleMetrics",
     "RuleType",
@@ -29,6 +69,10 @@ __all__ = [
     "SamplingStrategy",
     "Term",
     "TermKind",
+    "Triple",
+    "TripleSampler",
     "WalkConfig",
+    "WalkEngine",
     "WalkStrategy",
+    "aggregate_confidence",
 ]

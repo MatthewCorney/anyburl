@@ -1,13 +1,32 @@
 """Configuration for the triple sampler."""
 
 from dataclasses import dataclass
-
-from anyburl.enums import SamplingStrategy
-
-__all__ = ["SamplerConfig"]
+from enum import StrEnum
 
 DEFAULT_SAMPLE_SIZE: int = 1000
 DEFAULT_RANDOM_SEED: int = 42
+
+
+class SamplingStrategy(StrEnum):
+    """Strategy for sampling target triples from the knowledge graph.
+
+    Attributes
+    ----------
+    UNIFORM : str
+        Each *edge* has equal probability of being sampled. More common
+        relations naturally yield more samples.
+    RELATION_PROPORTIONAL : str
+        Each *relation type* has equal selection probability, then
+        sample uniformly within the chosen type. Ensures balanced
+        representation regardless of edge count.
+    RELATION_INVERSE : str
+        Sample inversely proportional to relation frequency. Rarer
+        relations get more samples, improving coverage.
+    """
+
+    UNIFORM = "uniform"
+    RELATION_PROPORTIONAL = "relation_proportional"
+    RELATION_INVERSE = "relation_inverse"
 
 
 @dataclass(frozen=True, slots=True)

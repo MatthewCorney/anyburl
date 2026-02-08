@@ -7,7 +7,10 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "torch>=2.0.0",
+    "torch-geometric>=2.4.0",
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -56,6 +59,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "D", "ARG", "PLR2004"]
+"anyburl/scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["anyburl"]
@@ -76,11 +80,24 @@ warn_unused_configs = true
 show_error_codes = true
 show_error_context = true
 pretty = true
+exclude = ["anyburl/scripts/"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = "anyburl.scripts.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+ignore_missing_imports = true
+follow_untyped_imports = true
+
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "torch_geometric", "torch_geometric.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -88,4 +105,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = ["-ra", "--strict-markers", "--strict-config", "-v"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    "ignore::UserWarning:torch",
+    "ignore::DeprecationWarning:torch",
+    "ignore::DeprecationWarning:torch_geometric",
+]

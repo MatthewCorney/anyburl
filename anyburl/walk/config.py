@@ -1,15 +1,28 @@
 """Configuration for the random walk engine."""
 
 from dataclasses import dataclass
-
-from anyburl.enums import WalkStrategy
-
-__all__ = ["WalkConfig"]
+from enum import StrEnum
 
 DEFAULT_MAX_WALK_LENGTH: int = 5
 DEFAULT_MIN_WALK_LENGTH: int = 2
 DEFAULT_MAX_WALK_ATTEMPTS: int = 100
 DEFAULT_RANDOM_SEED: int = 42
+
+
+class WalkStrategy(StrEnum):
+    """Strategy for selecting the next edge during a random walk.
+
+    Attributes
+    ----------
+    UNIFORM : str
+        Select uniformly at random among all outgoing edges.
+    RELATION_WEIGHTED : str
+        Weight edges by inverse frequency of their relation type,
+        favoring rarer relations to discover more diverse rules.
+    """
+
+    UNIFORM = "uniform"
+    RELATION_WEIGHTED = "relation_weighted"
 
 
 @dataclass(frozen=True, slots=True)
