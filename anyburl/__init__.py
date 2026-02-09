@@ -50,29 +50,42 @@ References
    *IJCAI*.
 """
 
+from .anyburl import AnyBURL, AnyBURLConfig
 from .graph import HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics, aggregate_confidence
+from .prediction import Prediction, RulePredictor
 from .rule import Atom, Rule, RuleConfig, RuleGeneralizer, RuleType, Term, TermKind
-from .sampler import SamplerConfig, SamplingStrategy, Triple, TripleSampler
+from .sampler import (
+    SamplerConfig,
+    SamplingStrategy,
+    Triple,
+    UniformTripleSampler,
+    WeightedTripleSampler,
+)
 from .walk import WalkConfig, WalkEngine, WalkStrategy
 
 __all__ = [
+    "AnyBURL",
+    "AnyBURLConfig",
     "Atom",
     "HeteroGraph",
+    "Prediction",
     "Rule",
     "RuleConfig",
     "RuleEvaluator",
     "RuleGeneralizer",
     "RuleMetrics",
+    "RulePredictor",
     "RuleType",
     "SamplerConfig",
     "SamplingStrategy",
     "Term",
     "TermKind",
     "Triple",
-    "TripleSampler",
+    "UniformTripleSampler",
     "WalkConfig",
     "WalkEngine",
     "WalkStrategy",
+    "WeightedTripleSampler",
     "aggregate_confidence",
 ]

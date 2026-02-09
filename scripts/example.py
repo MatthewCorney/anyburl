@@ -1,186 +1,120 @@
-"""End-to-end AnyBURL pipeline on the DBLP dataset.
+"""End-to-end AnyBURL pipeline on the BIOKG dataset.
 
-Wires together all four engine components -- HeteroGraph, TripleSampler,
-WalkEngine, RuleGeneralizer/RuleEvaluator -- on a real PyG dataset to verify
-the pipeline works: sample triples, walk, generalize into rules, evaluate,
-and print the best rules.
+Uses `AnyBURLPipeline` to learn rules from a real heterogeneous knowledge
+graph and print the best results.
 
-DBLP has 4 node types (Author, Paper, Term, Conference) and 3 distinct edge
-semantics (author-paper, paper-term, conference-paper), making it ideal for
-demonstrating heterogeneous rule learning.
+BIOKG has 4 node types (drug, function, phenotype, protein) and 83 edge
+types spanning drug-protein interactions, GO ontology relations, phenotype
+associations, and protein-protein interactions -- ideal for testing rule
+learning over diverse relation types.
 
 This is a standalone demo script -- not production code. It intentionally
 skips strict typing and enum usage for brevity.
 """
+import pickle
 import time
 import warnings
+from collections import defaultdict
+from pathlib import Path
 
-from torch_geometric.datasets import DBLP
+import torch
+from torch_geometric.data import HeteroData
 
-from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleEvaluator
-from anyburl.rule import Rule, RuleConfig, RuleGeneralizer
-from anyburl.sampler import SamplerConfig, SamplingStrategy, TripleSampler
-from anyburl.walk import WalkConfig, WalkEngine, WalkStrategy
+from anyburl import AnyBURLConfig, AnyBURL, SamplingStrategy
 
 # Suppress beta warnings from sparse CSR tensors
 warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
 
+PICKLE_PATH = Path(__file__).resolve().parent / "data" / "BIOKG" / "KG_100.pickle"
+
 # ---------------------------------------------------------------------------
 # Pipeline parameters
 # ---------------------------------------------------------------------------
-SAMPLE_SIZE = 500
-MAX_WALK_LENGTH = 3
-MIN_WALK_LENGTH = 2
-MAX_WALK_ATTEMPTS = 50
 TOP_K_RULES = 20
-SEED = 42
+TARGET_EDGE_TYPE = ("protein", "is_annotated_to", "phenotype")
 
-# Filter out low-quality rules
-MIN_SUPPORT = 2
-MIN_CONFIDENCE = 0.01
-MIN_HEAD_COVERAGE = 0.01
+
+def _load_biokg_pickle() -> HeteroData:
+    """Load BIOKG pickle and convert to PyG HeteroData."""
+    with PICKLE_PATH.open("rb") as f:
+        nx_graph = pickle.load(f)  # noqa: S301
+
+    # Map each node to a contiguous integer within its type
+    type_to_ids: dict[str, dict[str, int]] = defaultdict(dict)
+    for node, attrs in nx_graph.nodes(data=True):
+        node_type = attrs["tipo"]
+        mapping = type_to_ids[node_type]
+        if node not in mapping:
+            mapping[node] = len(mapping)
+
+    # Group edges by (src_type, rel, dst_type), deduplicating
+    edge_sets: dict[tuple[str, str, str], set[tuple[int, int]]] = defaultdict(set)
+    for u, v, attrs in nx_graph.edges(data=True):
+        src_type = nx_graph.nodes[u]["tipo"]
+        dst_type = nx_graph.nodes[v]["tipo"]
+        rel = attrs["rel_type"]
+        src_id = type_to_ids[src_type][u]
+        dst_id = type_to_ids[dst_type][v]
+        edge_sets[(src_type, rel, dst_type)].add((src_id, dst_id))
+
+    data = HeteroData()
+    for node_type, mapping in type_to_ids.items():
+        data[node_type].num_nodes = len(mapping)
+    for edge_type, pairs in edge_sets.items():
+        src_ids, dst_ids = zip(*pairs)
+        data[edge_type].edge_index = torch.tensor(
+            [src_ids, dst_ids], dtype=torch.long
+        )
+
+    return data
 
 
 def main() -> None:
     # ------------------------------------------------------------------
-    # 1. Load DBLP dataset
+    # 1. Load BIOKG dataset
     # ------------------------------------------------------------------
     print("=" * 60)
-    print("AnyBURL End-to-End Pipeline - DBLP Dataset")
+    print("AnyBURL End-to-End Pipeline - BIOKG Dataset")
     print("=" * 60)
     print()
 
     t0 = time.perf_counter()
-    dataset = DBLP(root="./data/DBLP")
-    data = dataset[0]
+    data = _load_biokg_pickle()
     elapsed = time.perf_counter() - t0
-    print(f"[1/6] Loaded DBLP dataset ({elapsed:.2f}s)")
+    print(f"[1/2] Loaded BIOKG pickle ({elapsed:.2f}s)")
 
     # ------------------------------------------------------------------
-    # 2. Build HeteroGraph
+    # 2. Run pipeline
     # ------------------------------------------------------------------
-    t0 = time.perf_counter()
-    graph = HeteroGraph(data)
-    elapsed = time.perf_counter() - t0
-    print(f"[2/6] Built HeteroGraph ({elapsed:.2f}s)")
-
-    print()
-    print("  Node types:")
-    for nt in graph.node_types:
-        print(f"    {nt}: {graph.node_count(nt)} nodes")
-    print("  Edge types:")
-    for et in graph.edge_types:
-        print(f"    {et}: {graph.edge_count(et)} edges")
-    print(f"  Total edges: {graph.total_edge_count()}")
-    print()
-
-    # ------------------------------------------------------------------
-    # 3. Sample triples
-    # ------------------------------------------------------------------
-    sampler_config = SamplerConfig(
-        sample_size=SAMPLE_SIZE,
-        strategy=SamplingStrategy.UNIFORM,
-        seed=SEED,
+    config = AnyBURLConfig(
+        sample_size=4000,
+        sampling_strategy=SamplingStrategy.UNIFORM,
+        target_edge_type=TARGET_EDGE_TYPE,
+        max_walk_length=4,
+        min_walk_length=2,
+        max_walk_attempts=1000,
+        min_support=3,
+        min_confidence=0.001,
+        min_head_coverage=0.005,
+        seed=42,
     )
-    sampler = TripleSampler(graph, sampler_config)
 
     t0 = time.perf_counter()
-    triples = sampler.sample()
+    pipeline = AnyBURL(config).fit(data)
     elapsed = time.perf_counter() - t0
-    print(f"[3/6] Sampled {len(triples)} triples ({elapsed:.2f}s)")
-
-    # ------------------------------------------------------------------
-    # 4. Walk from each triple
-    # ------------------------------------------------------------------
-    walk_config = WalkConfig(
-        max_length=MAX_WALK_LENGTH,
-        min_length=MIN_WALK_LENGTH,
-        max_attempts=MAX_WALK_ATTEMPTS,
-        strategy=WalkStrategy.UNIFORM,
-        seed=SEED,
-    )
-    walker = WalkEngine(graph, walk_config)
-
-    t0 = time.perf_counter()
-    all_paths = []
-    triples_with_paths = 0
-    for triple in triples:
-        paths = walker.walk_from_triple(triple)
-        if paths:
-            triples_with_paths += 1
-        for path in paths:
-            all_paths.append((path, triple))
-    elapsed = time.perf_counter() - t0
-    print(
-        f"[4/6] Walked {len(all_paths)} paths from "
-        f"{triples_with_paths}/{len(triples)} triples ({elapsed:.2f}s)"
-    )
-
-    # ------------------------------------------------------------------
-    # 5. Generalize paths into rules
-    # ------------------------------------------------------------------
-    rule_config = RuleConfig(
-        min_support=MIN_SUPPORT,
-        min_confidence=MIN_CONFIDENCE,
-        min_head_coverage=MIN_HEAD_COVERAGE,
-    )
-    generalizer = RuleGeneralizer(rule_config)
-
-    t0 = time.perf_counter()
-    seen_rules: set[str] = set()
-    unique_rules: list[Rule] = []
-    generalization_errors = 0
-
-    for path, triple in all_paths:
-        try:
-            rules = generalizer.generalize(
-                path,
-                target_relation=triple.relation,
-                head_type=triple.head_type,
-                tail_type=triple.tail_type,
-            )
-        except ValueError:
-            generalization_errors += 1
-            continue
-
-        for rule in rules:
-            rule_str = str(rule)
-            if rule_str not in seen_rules:
-                seen_rules.add(rule_str)
-                unique_rules.append(rule)
-
-    elapsed = time.perf_counter() - t0
-    print(
-        f"[5/6] Generalized into {len(unique_rules)} unique rules "
-        f"({generalization_errors} errors) ({elapsed:.2f}s)"
-    )
-
-    # ------------------------------------------------------------------
-    # 6. Evaluate rules
-    # ------------------------------------------------------------------
-    metrics_config = RuleConfig(
-        min_support=MIN_SUPPORT,
-        min_confidence=MIN_CONFIDENCE,
-        min_head_coverage=MIN_HEAD_COVERAGE,
-    )
-    evaluator = RuleEvaluator(graph, metrics_config)
-
-    t0 = time.perf_counter()
-    results = evaluator.evaluate_batch(unique_rules)
-    elapsed = time.perf_counter() - t0
-    print(f"[6/6] Evaluated rules: {len(results)} pass thresholds ({elapsed:.2f}s)")
+    print(f"[2/2] Pipeline completed ({elapsed:.2f}s)")
 
     # ------------------------------------------------------------------
     # Print results
     # ------------------------------------------------------------------
+    results = pipeline.results
     print()
     print("=" * 60)
     print("Summary")
     print("=" * 60)
-    print(f"  Triples sampled:     {len(triples)}")
-    print(f"  Paths found:         {len(all_paths)}")
-    print(f"  Unique rules:        {len(unique_rules)}")
+    print(f"  Triples sampled:     {len(pipeline.triples)}")
+    print(f"  Paths found:         {len(pipeline.paths)}")
+    print(f"  Unique rules:        {len(pipeline.rules)}")
     print(f"  Rules passing filter:{len(results)}")
     print()
 
@@ -200,6 +134,41 @@ def main() -> None:
             f"{i + 1:<4} {rule.rule_type.value:<8} {metrics.support:<10} "
             f"{metrics.confidence:<10.4f} {metrics.head_coverage:<10.4f} "
             f"{metrics.num_predictions:<10} {rule}"
+        )
+
+    print("-" * 100)
+
+    # ------------------------------------------------------------------
+    # 3. Predictions
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 60)
+    print("Predictions (filter_known=True)")
+    print("=" * 60)
+
+    t0 = time.perf_counter()
+    predictions = pipeline.predict(filter_known=True)
+    elapsed = time.perf_counter() - t0
+    print(f"Generated {len(predictions)} predictions ({elapsed:.2f}s)")
+    print()
+
+    TOP_K_PREDICTIONS = 20
+    n_show = min(TOP_K_PREDICTIONS, len(predictions))
+    print(f"Top {n_show} Predictions (by aggregated confidence):")
+    print("-" * 100)
+    print(
+        f"{'#':<4} {'Head':<20} {'Tail':<20} "
+        f"{'AggConf':<10} {'MaxConf':<10} {'MeanConf':<10} {'#Rules':<8}"
+    )
+    print("-" * 100)
+
+    for i, pred in enumerate(predictions[:TOP_K_PREDICTIONS]):
+        head_label = f"{pred.head_type}:{pred.head_id}"
+        tail_label = f"{pred.tail_type}:{pred.tail_id}"
+        print(
+            f"{i + 1:<4} {head_label:<20} {tail_label:<20} "
+            f"{pred.aggregated_confidence:<10.4f} {pred.max_confidence:<10.4f} "
+            f"{pred.mean_confidence:<10.4f} {pred.num_rules:<8}"
         )
 
     print("-" * 100)

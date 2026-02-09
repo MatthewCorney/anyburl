@@ -11,7 +11,7 @@ from torch import Tensor
 from ._logging import get_logger
 from .graph import EdgeTypeTuple, HeteroGraph
 from .rule import Atom, Rule, RuleConfig, RuleType, TermKind
-
+from tqdm import tqdm
 logger = get_logger(__name__)
 
 ZERO_CONFIDENCE: float = 0.0
@@ -169,7 +169,7 @@ class RuleEvaluator:
             passing the configured thresholds.
         """
         results: list[tuple[Rule, RuleMetrics]] = []
-        for rule in rules:
+        for rule in tqdm(rules, desc='Evaluating Rules'):
             metrics = self.evaluate(rule)
             if metrics.passes_thresholds(
                 min_support=self._config.min_support,

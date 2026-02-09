@@ -236,18 +236,21 @@ class Rule:
     def is_tautological(self) -> bool:
         """Check whether the rule is tautological.
 
-        A rule is tautological when any body atom has the same edge
-        signature (subject type, relation, object type) as the head.
-        Such rules are trivially satisfied because the body can always
-        be grounded to the head triple itself.
+        A rule is tautological when any body atom is identical to the
+        head atom (same relation AND same terms). For example,
+        ``p(X, Y) :- p(X, Y)`` is tautological because the body is
+        trivially satisfied by the head triple itself.
+
+        A body atom that shares only the edge type but uses different
+        variables (e.g. ``p(X, Z0)`` vs head ``p(X, Y)``) is NOT
+        tautological --- it constrains the prediction meaningfully.
 
         Returns
         -------
         bool
             ``True`` if the rule is tautological.
         """
-        head_sig = self.head.edge_signature
-        return any(atom.edge_signature == head_sig for atom in self.body)
+        return any(atom == self.head for atom in self.body)
 
     @property
     def constants(self) -> frozenset[tuple[int, str]]:

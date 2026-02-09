@@ -1,6 +1,13 @@
 """Random walk submodule for AnyBURL."""
 
-from .config import WalkConfig, WalkStrategy
+from .base import WalkConfig, WalkStrategy
 from .walker import WalkEngine
+from .relation_weighted_selector import RelationWeightedEdgeSelector
+from .uniform_selector import UniformEdgeSelector
 
-__all__ = ["WalkConfig", "WalkEngine", "WalkStrategy"]
+__all__ = ["WalkConfig",
+           "WalkEngine",
+           "WalkStrategy",
+           "UniformEdgeSelector",
+           "RelationWeightedEdgeSelector",
+           ]
