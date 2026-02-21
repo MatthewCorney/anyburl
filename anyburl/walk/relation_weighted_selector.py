@@ -7,19 +7,20 @@ class RelationWeightedEdgeSelector:
     """Select edge types using inverse-frequency weighting."""
 
     def __init__(
-            self,
-            graph: HeteroGraph,
-            generator: torch.Generator,
+        self,
+        graph: HeteroGraph,
+        generator: torch.Generator,
     ) -> None:
         self._graph = graph
         self._generator = generator
         self._weights = self._compute_inverse_weights()
 
     def select(
-            self,
-            node_type: str,
-            candidates: tuple[EdgeTypeTuple, ...],
+        self,
+        node_type: str,
+        candidates: tuple[EdgeTypeTuple, ...],
     ) -> EdgeTypeTuple:
+        """Select one candidate edge type weighted by inverse relation frequency."""
         weights = self._weights.get(node_type)
 
         if weights is None:

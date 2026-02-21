@@ -1,7 +1,10 @@
 """Triple sampling from a heterogeneous knowledge graph."""
+
 import torch
-from .base import BaseTripleSampler, Triple
+
 from .._logging import get_logger
+from .base import BaseTripleSampler, Triple
+
 logger = get_logger(__name__)
 
 
@@ -9,6 +12,7 @@ class UniformTripleSampler(BaseTripleSampler):
     """Uniform sampling across all edges."""
 
     def sample(self) -> list[Triple]:
+        """Sample triples uniformly at random across all edges."""
         n = self._sample_size()
 
         flat_indices = torch.randint(
@@ -27,19 +31,15 @@ class UniformTripleSampler(BaseTripleSampler):
         triples: list[Triple] = []
 
         for type_idx, flat_idx in zip(
-                type_indices.tolist(),
-                flat_indices.tolist(),
-                strict=True,
+            type_indices.tolist(),
+            flat_indices.tolist(),
+            strict=True,
         ):
             offset = (
-                int(self._cumulative_counts[type_idx - 1].item())
-                if type_idx > 0
-                else 0
+                int(self._cumulative_counts[type_idx - 1].item()) if type_idx > 0 else 0
             )
             local_idx = flat_idx - offset
-            triples.append(
-                self._extract_triple(self._edge_types[type_idx], local_idx)
-            )
+            triples.append(self._extract_triple(self._edge_types[type_idx], local_idx))
 
         logger.debug("Sampled %d triples via uniform strategy", len(triples))
         return triples

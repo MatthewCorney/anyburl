@@ -11,6 +11,7 @@ learning over diverse relation types.
 This is a standalone demo script -- not production code. It intentionally
 skips strict typing and enum usage for brevity.
 """
+
 import pickle
 import time
 import warnings
@@ -20,7 +21,7 @@ from pathlib import Path
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl import AnyBURLConfig, AnyBURL, SamplingStrategy
+from anyburl import AnyBURL, AnyBURLConfig, SamplingStrategy
 
 # Suppress beta warnings from sparse CSR tensors
 warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
@@ -62,9 +63,7 @@ def _load_biokg_pickle() -> HeteroData:
         data[node_type].num_nodes = len(mapping)
     for edge_type, pairs in edge_sets.items():
         src_ids, dst_ids = zip(*pairs)
-        data[edge_type].edge_index = torch.tensor(
-            [src_ids, dst_ids], dtype=torch.long
-        )
+        data[edge_type].edge_index = torch.tensor([src_ids, dst_ids], dtype=torch.long)
 
     return data
 
@@ -151,27 +150,19 @@ def main() -> None:
     elapsed = time.perf_counter() - t0
     print(f"Generated {len(predictions)} predictions ({elapsed:.2f}s)")
     print()
-
     TOP_K_PREDICTIONS = 20
     n_show = min(TOP_K_PREDICTIONS, len(predictions))
-    print(f"Top {n_show} Predictions (by aggregated confidence):")
-    print("-" * 100)
-    print(
-        f"{'#':<4} {'Head':<20} {'Tail':<20} "
-        f"{'AggConf':<10} {'MaxConf':<10} {'MeanConf':<10} {'#Rules':<8}"
-    )
-    print("-" * 100)
+    print(f"Top {n_show} Predictions (by score):")
+    print("-" * 80)
+    print(f"{'#':<4} {'Head':<20} {'Tail':<20} {'Score':<10}")
+    print("-" * 80)
 
     for i, pred in enumerate(predictions[:TOP_K_PREDICTIONS]):
         head_label = f"{pred.head_type}:{pred.head_id}"
         tail_label = f"{pred.tail_type}:{pred.tail_id}"
-        print(
-            f"{i + 1:<4} {head_label:<20} {tail_label:<20} "
-            f"{pred.aggregated_confidence:<10.4f} {pred.max_confidence:<10.4f} "
-            f"{pred.mean_confidence:<10.4f} {pred.num_rules:<8}"
-        )
+        print(f"{i + 1:<4} {head_label:<20} {tail_label:<20} {pred.score:<10.4f}")
 
-    print("-" * 100)
+    print("-" * 80)
 
 
 if __name__ == "__main__":

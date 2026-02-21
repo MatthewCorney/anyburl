@@ -322,8 +322,6 @@ class HeteroGraph:
         idx = self._csr_index.get(edge_type)
         if idx is None:
             if edge_type in self._edge_counts:
-                raise ValueError(
-                    f"Edge type {edge_type!r} exists but has no edges"
-                )
+                raise ValueError(f"Edge type {edge_type!r} exists but has no edges")
             raise ValueError(f"Unknown edge type: {edge_type!r}")
         return idx

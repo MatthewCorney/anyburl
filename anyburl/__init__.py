@@ -42,6 +42,9 @@ Module Layout
     and :class:`RuleConfig`.
 ``metrics``
     :class:`RuleEvaluator` and :class:`RuleMetrics`.
+``evaluation``
+    :class:`LinkPredictionEvaluator`, :class:`EvaluationConfig`,
+    and :class:`LinkPredictionMetrics`.
 
 References
 ----------
@@ -51,6 +54,7 @@ References
 """
 
 from .anyburl import AnyBURL, AnyBURLConfig
+from .evaluation import EvaluationConfig, LinkPredictionEvaluator, LinkPredictionMetrics
 from .graph import HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics, aggregate_confidence
 from .prediction import Prediction, RulePredictor
@@ -68,7 +72,10 @@ __all__ = [
     "AnyBURL",
     "AnyBURLConfig",
     "Atom",
+    "EvaluationConfig",
     "HeteroGraph",
+    "LinkPredictionEvaluator",
+    "LinkPredictionMetrics",
     "Prediction",
     "Rule",
     "RuleConfig",

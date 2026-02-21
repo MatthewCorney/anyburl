@@ -1,9 +1,10 @@
+from dataclasses import dataclass
+from enum import StrEnum
+
 import torch
 from torch import Tensor
 
 from ..graph import EdgeTypeTuple, HeteroGraph
-from dataclasses import dataclass
-from enum import StrEnum
 
 DEFAULT_SAMPLE_SIZE: int = 1000
 DEFAULT_RANDOM_SEED: int = 42
@@ -65,9 +66,9 @@ class SamplerConfig:
         if self.sample_size < 1:
             raise ValueError(f"sample_size must be positive, got {self.sample_size}")
         if self.target_edge_type is not None and (
-                not isinstance(self.target_edge_type, tuple)
-                or len(self.target_edge_type) != EDGE_TYPE_TUPLE_LENGTH
-                or not all(isinstance(s, str) for s in self.target_edge_type)
+            not isinstance(self.target_edge_type, tuple)
+            or len(self.target_edge_type) != EDGE_TYPE_TUPLE_LENGTH
+            or not all(isinstance(s, str) for s in self.target_edge_type)
         ):
             raise ValueError(
                 f"target_edge_type must be a 3-tuple of strings, "
@@ -108,9 +109,7 @@ class BaseTripleSampler:
         self._config = config
         self._generator = torch.Generator().manual_seed(config.seed)
 
-        self._edge_types = [
-            et for et in graph.edge_types if graph.edge_count(et) > 0
-        ]
+        self._edge_types = [et for et in graph.edge_types if graph.edge_count(et) > 0]
 
         if config.target_edge_type is not None:
             target = config.target_edge_type
@@ -134,9 +133,9 @@ class BaseTripleSampler:
     # ---- shared helpers ----
 
     def _extract_triple(
-            self,
-            edge_type: EdgeTypeTuple,
-            local_idx: int,
+        self,
+        edge_type: EdgeTypeTuple,
+        local_idx: int,
     ) -> Triple:
         ei: Tensor = self._graph.edge_index(edge_type)
         src_type, relation, dst_type = edge_type
@@ -152,4 +151,5 @@ class BaseTripleSampler:
         return min(self._config.sample_size, self._total_edges)
 
     def sample(self) -> list[Triple]:
+        """Sample triples from the graph. Implemented by subclasses."""
         raise NotImplementedError

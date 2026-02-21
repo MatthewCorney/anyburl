@@ -1,7 +1,5 @@
 """Random walk engine with pluggable edge-selection strategies."""
 
-
-
 import torch
 
 from .._logging import get_logger
@@ -9,8 +7,9 @@ from ..graph import EdgeTypeTuple, HeteroGraph
 from ..rule import PathStep
 from ..sampler import Triple
 from .base import WalkConfig
-from .uniform_selector import UniformEdgeSelector
 from .relation_weighted_selector import RelationWeightedEdgeSelector
+from .uniform_selector import UniformEdgeSelector
+
 logger = get_logger(__name__)
 
 DEFAULT_MAX_WALK_LENGTH: int = 5
@@ -20,6 +19,7 @@ DEFAULT_RANDOM_SEED: int = 42
 
 EMPTY_RELATION: str = ""
 """Sentinel relation for the final step in a walk path."""
+
 
 class WalkEngine:
     """Performs random walks using a pluggable edge-selection strategy."""
@@ -104,5 +104,3 @@ class WalkEngine:
         if not candidates:
             return None
         return self._selector.select(node_type, candidates)
-
-

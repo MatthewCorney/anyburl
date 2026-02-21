@@ -11,9 +11,10 @@ class UniformEdgeSelector:
 
     def select(
         self,
-        node_type: str,
+        _node_type: str,
         candidates: tuple[EdgeTypeTuple, ...],
     ) -> EdgeTypeTuple:
+        """Select one candidate edge type uniformly at random."""
         idx = int(
             torch.randint(
                 0,
@@ -23,4 +24,3 @@ class UniformEdgeSelector:
             ).item()
         )
         return candidates[idx]
-

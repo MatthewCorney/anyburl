@@ -1,18 +1,34 @@
 """End-to-end AnyBURL pipeline: sample, walk, generalize, evaluate."""
-from dataclasses import dataclass
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Self
+
+import torch
+from torch_geometric.data import HeteroData
+from tqdm import tqdm
+
+from ._logging import get_logger
+from .evaluation import EvaluationConfig, LinkPredictionEvaluator, LinkPredictionMetrics
 from .graph import HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics
 from .prediction import Prediction, RulePredictor
-from .rule import Rule, RuleConfig, RuleGeneralizer
-from .sampler import SamplerConfig, SamplingStrategy, Triple, UniformTripleSampler, WeightedTripleSampler, \
-    BaseTripleSampler
-from .walk import WalkConfig, WalkEngine, WalkStrategy, RelationWeightedEdgeSelector, UniformEdgeSelector
-from torch_geometric.data import HeteroData
-import torch
-from .rule import PathStep
-from tqdm import tqdm
-from ._logging import get_logger
+from .rule import PathStep, Rule, RuleConfig, RuleGeneralizer
+from .sampler import (
+    BaseTripleSampler,
+    SamplerConfig,
+    SamplingStrategy,
+    Triple,
+    UniformTripleSampler,
+    WeightedTripleSampler,
+)
+from .walk import (
+    RelationWeightedEdgeSelector,
+    UniformEdgeSelector,
+    WalkConfig,
+    WalkEngine,
+    WalkStrategy,
+)
 
 logger = get_logger(__name__)
 
@@ -64,9 +80,28 @@ class AnyBURLConfig:
 
 
 def build_triple_sampler(
-        graph: HeteroGraph,
-        config: SamplerConfig,
+    graph: HeteroGraph,
+    config: SamplerConfig,
 ) -> BaseTripleSampler:
+    """Build a triple sampler based on the configured strategy.
+
+    Parameters
+    ----------
+    graph : HeteroGraph
+        The knowledge graph.
+    config : SamplerConfig
+        Sampler configuration.
+
+    Returns
+    -------
+    BaseTripleSampler
+        A sampler instance.
+
+    Raises
+    ------
+    ValueError
+        If the strategy is not supported.
+    """
     if config.strategy == SamplingStrategy.UNIFORM:
         return UniformTripleSampler(graph, config)
 
@@ -81,17 +116,37 @@ def build_triple_sampler(
         weights = 1.0 / edge_counts
         weights = weights / weights.sum()
     else:
-        raise ValueError('Pass')
+        msg = f"Unsupported sampling strategy: {config.strategy}"
+        raise ValueError(msg)
 
     return WeightedTripleSampler(graph, config, weights)
 
 
 def build_walk_engine(
-        graph: HeteroGraph,
-        config: WalkConfig,
+    graph: HeteroGraph,
+    config: WalkConfig,
 ) -> WalkEngine:
-    """Factory for constructing a WalkEngine with the correct strategy."""
+    """Build a WalkEngine with the correct edge selection strategy.
+
+    Parameters
+    ----------
+    graph : HeteroGraph
+        The knowledge graph.
+    config : WalkConfig
+        Walk configuration.
+
+    Returns
+    -------
+    WalkEngine
+        A walk engine instance.
+
+    Raises
+    ------
+    ValueError
+        If the walk strategy is not supported.
+    """
     generator = torch.Generator().manual_seed(config.seed)
+    selector: UniformEdgeSelector | RelationWeightedEdgeSelector
 
     if config.strategy is WalkStrategy.UNIFORM:
         selector = UniformEdgeSelector(generator)
@@ -100,7 +155,8 @@ def build_walk_engine(
         selector = RelationWeightedEdgeSelector(graph, generator)
 
     else:
-        raise ValueError(f"Unsupported walk strategy: {config.strategy}")
+        msg = f"Unsupported walk strategy: {config.strategy}"
+        raise ValueError(msg)
 
     return WalkEngine(graph, config, selector)
 
@@ -146,7 +202,7 @@ class AnyBURL:
         self.rules: list[Rule] = []
         self.results: list[tuple[Rule, RuleMetrics]] = []
 
-    def fit(self, data: HeteroData) -> 'AnyBURL':
+    def fit(self, data: HeteroData) -> Self:
         """Run the full AnyBURL learning pipeline.
 
         Executes all four stages in order: sample triples, walk,
@@ -174,9 +230,8 @@ class AnyBURL:
     def predict(self, *, filter_known: bool = False) -> list[Prediction]:
         """Generate predictions by grounding learned rules against the graph.
 
-        Each rule is grounded via sparse matrix multiplication to find
-        ``(head, tail)`` pairs, then confidence scores are aggregated
-        across all rules that predict the same pair.
+        Pre-computes product matrices per unique body chain, then
+        aggregates confidence scores across all rules via noisy-or.
 
         Parameters
         ----------
@@ -187,7 +242,7 @@ class AnyBURL:
         Returns
         -------
         list[Prediction]
-            Predictions sorted by aggregated confidence descending.
+            Predictions sorted by score descending.
 
         Raises
         ------
@@ -197,12 +252,57 @@ class AnyBURL:
         graph = self._require_graph()
         if not self.results:
             msg = (
-                "No rules found. Call fit(data) first "
-                "and ensure rules pass thresholds."
+                "No rules found. Call fit(data) first and ensure rules pass thresholds."
             )
             raise RuntimeError(msg)
-        predictor = RulePredictor(graph)
-        return predictor.predict(self.results, filter_known=filter_known)
+        predictor = RulePredictor(graph, self.results)
+        return predictor.predict(filter_known=filter_known)
+
+    def evaluate_predictions(
+        self,
+        test_triples: Sequence[Triple],
+        *,
+        k_values: tuple[int, ...] = (1, 3, 10),
+        filter_known: bool = True,
+    ) -> LinkPredictionMetrics:
+        """Evaluate link prediction quality on test triples.
+
+        For each test triple, computes tail and head ranks using the
+        learned rules, then aggregates into MRR and Hits@K.
+
+        Parameters
+        ----------
+        test_triples : Sequence[Triple]
+            Test triples to evaluate.
+        k_values : tuple[int, ...]
+            Hits@K thresholds.
+        filter_known : bool
+            If ``True``, filter known triples when computing ranks.
+
+        Returns
+        -------
+        LinkPredictionMetrics
+            Aggregated MRR and Hits@K metrics.
+
+        Raises
+        ------
+        RuntimeError
+            If ``fit`` has not been called yet or produced no results.
+        """
+        graph = self._require_graph()
+        if not self.results:
+            msg = (
+                "No rules found. Call fit(data) first and ensure rules pass thresholds."
+            )
+            raise RuntimeError(msg)
+
+        predictor = RulePredictor(graph, self.results)
+        config = EvaluationConfig(
+            k_values=k_values,
+            filter_known=filter_known,
+        )
+        evaluator = LinkPredictionEvaluator(predictor, graph, config)
+        return evaluator.evaluate(test_triples)
 
     def _require_graph(self) -> HeteroGraph:
         """Return the graph, raising if ``fit`` has not been called."""
@@ -250,9 +350,11 @@ class AnyBURL:
             for path in paths:
                 self.paths.append((path, triple))
 
-        logger.info("Finished. Total triples: %d | Total paths: %d",
-                    len(self.triples),
-                    total_paths)
+        logger.info(
+            "Finished. Total triples: %d | Total paths: %d",
+            len(self.triples),
+            total_paths,
+        )
 
     def _generalize(self) -> None:
         """Generalize walk paths into typed Horn rules."""
@@ -269,7 +371,7 @@ class AnyBURL:
         seen: set[str] = set()
         self.rules = []
 
-        for path, triple in tqdm(self.paths,desc="Generalizing Rules"):
+        for path, triple in tqdm(self.paths, desc="Generalizing Rules"):
             try:
                 rules = generalizer.generalize(
                     path,

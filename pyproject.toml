@@ -41,7 +41,6 @@ select = [
     "B",      # flake8-bugbear
     "A",      # flake8-builtins
     "SIM",    # flake8-simplify
-    "TC",     # flake8-type-checking
     "RUF",    # ruff-specific
     "S",      # flake8-bandit (security)
     "C4",     # flake8-comprehensions
@@ -61,6 +60,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "D", "ARG", "PLR2004"]
 "anyburl/scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901"]
+"scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901", "B905", "E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["anyburl"]
@@ -98,6 +98,10 @@ follow_untyped_imports = true
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "torch_geometric", "torch_geometric.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tqdm", "tqdm.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
