@@ -10,7 +10,8 @@ from anyburl.sampler import Triple
 from anyburl.walk import WalkConfig, WalkStrategy
 
 
-def _make_linear_graph() -> HeteroGraph:
+@pytest.fixture
+def linear_graph() -> HeteroGraph:
     """Create a deterministic linear graph: A0 -> B0 -> A1.
 
     This graph guarantees a successful walk from A0 to A1 in exactly 2 steps
@@ -42,10 +43,9 @@ def test_walk_config_invalid_params(
         WalkConfig(**kwargs)  # type: ignore[arg-type]
 
 
-def test_walk_finds_path_on_linear_graph() -> None:
-    graph = _make_linear_graph()
+def test_walk_finds_path_on_linear_graph(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=2, max_attempts=50, seed=42)
-    engine = build_walk_engine(graph, config)
+    engine = build_walk_engine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -60,10 +60,9 @@ def test_walk_finds_path_on_linear_graph() -> None:
     assert path[2] == (1, "A", "")
 
 
-def test_walk_respects_min_length() -> None:
-    graph = _make_linear_graph()
+def test_walk_respects_min_length(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=3, max_length=5, max_attempts=50, seed=42)
-    engine = build_walk_engine(graph, config)
+    engine = build_walk_engine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -72,10 +71,9 @@ def test_walk_respects_min_length() -> None:
     assert paths == []
 
 
-def test_walk_deduplicates_paths() -> None:
-    graph = _make_linear_graph()
+def test_walk_deduplicates_paths(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=2, max_attempts=100, seed=42)
-    engine = build_walk_engine(graph, config)
+    engine = build_walk_engine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -97,10 +95,9 @@ def test_walk_returns_empty_on_dead_end() -> None:
     assert paths == []
 
 
-def test_pathstep_format_compatible_with_generalizer() -> None:
-    graph = _make_linear_graph()
+def test_pathstep_format_compatible_with_generalizer(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=2, max_attempts=50, seed=42)
-    engine = build_walk_engine(graph, config)
+    engine = build_walk_engine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -156,4 +153,11 @@ def test_build_walk_engine_relation_weighted(simple_graph: HeteroGraph) -> None:
         relation="knows",
     )
     paths = engine.walk_from_triple(triple)
+
     assert isinstance(paths, list)
+    assert len(paths) > 0
+    for path in paths:
+        for step in path:
+            assert isinstance(step[0], int)
+            assert isinstance(step[1], str)
+            assert isinstance(step[2], str)

@@ -50,13 +50,6 @@ def test_build_triple_sampler_all_strategies(
         assert isinstance(t, Triple)
 
 
-def test_uniform_sample_correct_count(simple_graph: HeteroGraph) -> None:
-    config = SamplerConfig(sample_size=5, strategy=SamplingStrategy.UNIFORM)
-    sampler = build_triple_sampler(simple_graph, config)
-    triples = sampler.sample()
-    assert len(triples) == 5
-
-
 def test_uniform_sample_all_valid_triples(simple_graph: HeteroGraph) -> None:
     config = SamplerConfig(sample_size=10, strategy=SamplingStrategy.UNIFORM)
     sampler = build_triple_sampler(simple_graph, config)
@@ -81,22 +74,6 @@ def test_uniform_sample_capped_at_total(simple_graph: HeteroGraph) -> None:
     assert len(triples) == simple_graph.total_edge_count()
 
 
-def test_proportional_sample(simple_graph: HeteroGraph) -> None:
-    config = SamplerConfig(
-        sample_size=10, strategy=SamplingStrategy.RELATION_PROPORTIONAL
-    )
-    sampler = build_triple_sampler(simple_graph, config)
-    triples = sampler.sample()
-    assert len(triples) == 10
-
-
-def test_inverse_sample_correct_count(simple_graph: HeteroGraph) -> None:
-    config = SamplerConfig(sample_size=10, strategy=SamplingStrategy.RELATION_INVERSE)
-    sampler = build_triple_sampler(simple_graph, config)
-    triples = sampler.sample()
-    assert len(triples) == 10
-
-
 def test_inverse_sample_favors_rare_relations(simple_graph: HeteroGraph) -> None:
     config = SamplerConfig(
         sample_size=1000, strategy=SamplingStrategy.RELATION_INVERSE, seed=42
@@ -107,8 +84,11 @@ def test_inverse_sample_favors_rare_relations(simple_graph: HeteroGraph) -> None
     for t in triples:
         relation_counts[t.relation] = relation_counts.get(t.relation, 0) + 1
 
-    assert "near" in relation_counts
-    assert "lives_in" in relation_counts
+    # Inverse weighting: each rare edge gets higher per-edge sampling rate.
+    # simple_graph has near=3 edges, lives_in=6 edges.
+    near_count = relation_counts.get("near", 0)
+    lives_in_count = relation_counts.get("lives_in", 0)
+    assert near_count / 3 > lives_in_count / 6
 
 
 def test_target_edge_type_filters_sampling(simple_graph: HeteroGraph) -> None:

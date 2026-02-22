@@ -37,14 +37,20 @@ def test_term_constant_str() -> None:
     assert str(Term.constant(3, node_type="city")) == "city:3"
 
 
-def test_term_variable_with_entity_id_raises() -> None:
-    with pytest.raises(ValueError, match="must not have an entity_id"):
-        Term(kind=TermKind.VARIABLE, node_type="person", name="X", entity_id=0)
-
-
-def test_term_constant_with_name_raises() -> None:
-    with pytest.raises(ValueError, match="must not have a name"):
-        Term(kind=TermKind.CONSTANT, node_type="person", entity_id=0, name="X")
+@pytest.mark.parametrize(
+    ("kind", "kwargs", "match"),
+    [
+        (TermKind.VARIABLE, {"name": "X", "entity_id": 0}, "entity_id"),
+        (TermKind.CONSTANT, {"entity_id": 0, "name": "X"}, "must not have a name"),
+    ],
+)
+def test_term_invalid_combination_raises(
+    kind: TermKind,
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        Term(kind=kind, node_type="person", **kwargs)  # type: ignore[arg-type]
 
 
 def test_atom_edge_signature() -> None:
@@ -260,3 +266,84 @@ def test_generalize_1step_same_relation_filters_tautological() -> None:
 
     assert all(r.rule_type == RuleType.AC1 for r in rules)
     assert len(rules) == 2
+
+
+def test_tautological_rule_detected() -> None:
+    head = Atom(
+        relation="lives_in",
+        subject=Term.variable("X", node_type="person"),
+        object_=Term.variable("Y", node_type="city"),
+    )
+    body = (
+        Atom(
+            relation="lives_in",
+            subject=Term.variable("X", node_type="person"),
+            object_=Term.variable("Y", node_type="city"),
+        ),
+    )
+    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
+    assert rule.is_tautological is True
+
+
+def test_non_tautological_rule(cyclic_rule: Rule) -> None:
+    assert cyclic_rule.is_tautological is False
+
+
+def test_same_edge_type_different_variables_not_tautological() -> None:
+    head = Atom(
+        relation="lives_in",
+        subject=Term.variable("X", node_type="person"),
+        object_=Term.variable("Y", node_type="city"),
+    )
+    body = (
+        Atom(
+            relation="lives_in",
+            subject=Term.variable("X", node_type="person"),
+            object_=Term.variable("Z0", node_type="city"),
+        ),
+        Atom(
+            relation="near",
+            subject=Term.variable("Z0", node_type="city"),
+            object_=Term.variable("Y", node_type="city"),
+        ),
+    )
+    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
+    assert rule.is_tautological is False
+
+
+def test_tautological_among_multiple_body_atoms() -> None:
+    head = Atom(
+        relation="lives_in",
+        subject=Term.variable("X", node_type="person"),
+        object_=Term.variable("Y", node_type="city"),
+    )
+    body = (
+        Atom(
+            relation="born_in",
+            subject=Term.variable("X", node_type="person"),
+            object_=Term.variable("Z0", node_type="city"),
+        ),
+        Atom(
+            relation="lives_in",
+            subject=Term.variable("X", node_type="person"),
+            object_=Term.variable("Y", node_type="city"),
+        ),
+    )
+    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
+    assert rule.is_tautological is True
+
+
+def test_generalize_keeps_same_edge_type_different_variables() -> None:
+    config = RuleConfig()
+    generalizer = RuleGeneralizer(config)
+
+    path = [(0, "person", "lives_in"), (1, "city", "near"), (2, "city", "")]
+
+    rules = generalizer.generalize(
+        path,
+        target_relation="lives_in",
+        head_type="person",
+        tail_type="city",
+    )
+
+    assert len(rules) == 3

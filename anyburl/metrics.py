@@ -105,6 +105,52 @@ def aggregate_confidence(confidences: Sequence[float]) -> float:
     return 1.0 - result
 
 
+def _csr_nnz(matrix: Tensor) -> int:
+    """Return the stored non-zero count of a CSR tensor."""
+    return matrix.col_indices().numel()
+
+
+def _csr_any_row(matrix: Tensor) -> Tensor:
+    """Bool mask: True for rows that contain at least one non-zero entry."""
+    crow = matrix.crow_indices()
+    return (crow[1:] - crow[:-1]) > 0
+
+
+def _csr_any_col(matrix: Tensor) -> Tensor:
+    """Bool mask: True for columns that appear in at least one row."""
+    num_cols = matrix.shape[1]
+    col_idx = matrix.col_indices()
+    mask = torch.zeros(num_cols, dtype=torch.bool)
+    if col_idx.numel() > 0:
+        mask.scatter_(0, col_idx.to(torch.long), True)
+    return mask
+
+
+def _csr_intersection_count(mat_a: Tensor, mat_b: Tensor) -> int:
+    """Count (row, col) pairs present as non-zeros in both CSR tensors."""
+    ncols = mat_a.shape[1]
+
+    a_crow = mat_a.crow_indices()
+    a_col = mat_a.col_indices()
+    a_row_nnz = (a_crow[1:] - a_crow[:-1]).to(torch.long)
+    a_rows = torch.repeat_interleave(
+        torch.arange(a_crow.numel() - 1, dtype=torch.long, device=a_col.device),
+        a_row_nnz,
+    )
+    a_linear = a_rows * ncols + a_col.to(torch.long)
+
+    b_crow = mat_b.crow_indices()
+    b_col = mat_b.col_indices()
+    b_row_nnz = (b_crow[1:] - b_crow[:-1]).to(torch.long)
+    b_rows = torch.repeat_interleave(
+        torch.arange(b_crow.numel() - 1, dtype=torch.long, device=b_col.device),
+        b_row_nnz,
+    )
+    b_linear = b_rows * ncols + b_col.to(torch.long)
+
+    return int(torch.isin(a_linear, b_linear).sum().item())
+
+
 class RuleEvaluator:
     """Evaluates rule quality using sparse CSR matmul against a graph.
 
@@ -203,13 +249,7 @@ class RuleEvaluator:
         chain = self._build_body_chain_matrices(rule)
         prediction_matrix = self._chain_multiply(chain)
 
-        # TODO: .to_dense() is the bottleneck for larger graphs.
-        # Should use sparse intersection for scalability.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-            prediction_dense = prediction_matrix.to_dense()
-        prediction_mask = prediction_dense > 0
-        num_predictions = int(prediction_mask.sum().item())
+        num_predictions = _csr_nnz(prediction_matrix)
 
         if num_predictions == 0:
             return RuleMetrics(
@@ -221,11 +261,7 @@ class RuleEvaluator:
 
         head_et = self._find_head_edge_type(rule)
         head_matrix = self._graph.get_csr_matrix(head_et)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-            head_dense = head_matrix.to_dense() > 0
-
-        support = int((prediction_mask & head_dense).sum().item())
+        support = _csr_intersection_count(prediction_matrix, head_matrix)
         confidence = support / num_predictions
         total_head_triples = self._graph.edge_count(head_et)
         head_coverage = (
@@ -383,15 +419,11 @@ class RuleEvaluator:
         chain = self._build_body_chain_matrices(rule)
         prediction_matrix = self._chain_multiply(chain)
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-            dense = prediction_matrix.to_dense()
-
         if is_subject_connected:
-            connected_mask = (dense > 0).any(dim=1)
+            connected_mask = _csr_any_row(prediction_matrix)
             disconnected_type = head.object_.node_type
         else:
-            connected_mask = (dense > 0).any(dim=0)
+            connected_mask = _csr_any_col(prediction_matrix)
             disconnected_type = head.subject.node_type
 
         connected_count = int(connected_mask.sum().item())

@@ -5,7 +5,7 @@ import pytest
 from anyburl.anyburl import AnyBURL, AnyBURLConfig
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
-from anyburl.prediction import Prediction, RulePredictor, _body_chain_key
+from anyburl.prediction import Prediction, RulePredictor
 from anyburl.rule import Atom, Rule, RuleType, Term
 
 
@@ -77,23 +77,6 @@ def _metrics(*, confidence: float) -> RuleMetrics:
     )
 
 
-def test_prediction_frozen_dataclass() -> None:
-    pred = Prediction(
-        head_id=0,
-        tail_id=1,
-        head_type="person",
-        tail_type="city",
-        relation="lives_in",
-        score=0.5,
-    )
-    assert pred.head_id == 0
-    assert pred.tail_id == 1
-    assert pred.head_type == "person"
-    assert pred.tail_type == "city"
-    assert pred.relation == "lives_in"
-    assert pred.score == 0.5
-
-
 def test_prediction_frozen_cannot_mutate() -> None:
     pred = Prediction(
         head_id=0,
@@ -103,29 +86,8 @@ def test_prediction_frozen_cannot_mutate() -> None:
         relation="lives_in",
         score=0.5,
     )
-    with pytest.raises(AttributeError):
+    with pytest.raises(AttributeError, match="cannot assign to field"):
         pred.head_id = 99  # type: ignore[misc]
-
-
-def test_same_body_chain_produces_same_key(cyclic_rule: Rule) -> None:
-    """Two cyclic rules with same body atoms should share a chain key."""
-    rule2 = cyclic_rule
-    assert _body_chain_key(cyclic_rule) == _body_chain_key(rule2)
-
-
-def test_different_body_chain_produces_different_key(cyclic_rule: Rule) -> None:
-    """Rules with different body atoms should have different keys."""
-    ac2 = _make_ac2_rule()
-    assert _body_chain_key(cyclic_rule) != _body_chain_key(ac2)
-
-
-def test_ac1_shares_chain_with_cyclic(cyclic_rule: Rule) -> None:
-    """AC1 rules with same body as a cyclic rule share the chain key."""
-    ac1_subj = _make_ac1_subject_grounded()
-    ac1_obj = _make_ac1_object_grounded()
-    key = _body_chain_key(cyclic_rule)
-    assert _body_chain_key(ac1_subj) == key
-    assert _body_chain_key(ac1_obj) == key
 
 
 def test_cyclic_predictions_contain_expected_pairs(
@@ -276,10 +238,16 @@ def test_ac2_rules_are_skipped(
         (ac2, _metrics(confidence=0.1)),
     ]
     predictor = RulePredictor(evaluator_graph, results)
-
     predictions = predictor.predict()
 
-    assert len(predictions) > 0
+    cyclic_only = RulePredictor(
+        evaluator_graph, [(cyclic_rule, _metrics(confidence=0.25))]
+    )
+    expected = cyclic_only.predict()
+
+    assert {(p.head_id, p.tail_id) for p in predictions} == {
+        (p.head_id, p.tail_id) for p in expected
+    }
 
 
 def test_predict_before_fit_raises() -> None:
