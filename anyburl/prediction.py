@@ -397,6 +397,15 @@ class RulePredictor:
         """
         unique_chains: dict[BodyChainKey, list[Tensor]] = {}
 
+        ac2_count = sum(1 for rule, _ in results if rule.rule_type is RuleType.AC2)
+        if ac2_count:
+            logger.debug(
+                "Skipping %d AC2 rule(s): AC2 rules are evaluated for quality "
+                "metrics but do not contribute to predictions (their predictions "
+                "are Cartesian products, making individual rule firing untractable).",
+                ac2_count,
+            )
+
         for rule, _ in results:
             if rule.rule_type is RuleType.AC2:
                 continue

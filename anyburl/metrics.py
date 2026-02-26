@@ -128,6 +128,10 @@ def _csr_any_col(matrix: Tensor) -> Tensor:
 
 def _csr_intersection_count(mat_a: Tensor, mat_b: Tensor) -> int:
     """Count (row, col) pairs present as non-zeros in both CSR tensors."""
+    if mat_a.shape != mat_b.shape:
+        raise ValueError(
+            f"Shape mismatch in intersection count: {mat_a.shape} vs {mat_b.shape}"
+        )
     ncols = mat_a.shape[1]
 
     a_crow = mat_a.crow_indices()
@@ -282,6 +286,16 @@ class RuleEvaluator:
 
         Builds a one-hot vector for the constant entity and multiplies
         through the body chain to find predictions.
+
+        **Evaluation semantics**: For a subject-grounded rule
+        ``h(person:0, Y) :- b1(X, Z0), ...``, X is a free variable in
+        the stored body, but the evaluator pins X to ``person:0`` by
+        starting the forward chain from that entity's one-hot vector.
+        For an object-grounded rule ``h(X, city:0) :- ..., bk(Z, Y)``,
+        Y is pinned to ``city:0`` via backward chain propagation.
+
+        This matches the original AnyBURL semantics where the constant
+        appears in both head and the anchoring body position.
 
         Parameters
         ----------

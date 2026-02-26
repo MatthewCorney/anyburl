@@ -199,8 +199,11 @@ class Rule:
     the head and each body atom are :class:`Atom` instances.
 
     The body is a tuple of atoms whose topology is determined by shared
-    variables. This naturally supports both linear chain rules and
-    branching rules without requiring a special data structure.
+    variables. The data structure can represent branching rules, but
+    the current walk engine only generates **linear chain** bodies
+    (each intermediate variable connects exactly two consecutive atoms),
+    and the evaluator's chain-matmul assumes a linear chain. Branching
+    rules would require a different grounding strategy.
 
     Parameters
     ----------
@@ -308,8 +311,10 @@ class RuleConfig:
             )
 
 
-# Path step: (entity_id, node_type, relation_traversed)
-# The last step's relation connects to the tail entity of the target triple.
+# Path step: (entity_id, node_type, relation_traversed_to_next_entity)
+# Each step's relation is the outgoing edge used to reach the NEXT step's entity.
+# The final step is a sentinel: (tail_entity_id, tail_node_type, "") where the
+# empty relation string is a placeholder that _build_body_atoms always discards.
 PathStep = tuple[int, str, str]
 
 
@@ -357,8 +362,10 @@ class RuleGeneralizer:
         ----------
         path : Sequence[PathStep]
             Concrete walk steps as ``(entity_id, node_type, relation)``
-            tuples. The first step starts at the head entity; the walk
-            ends at the tail entity (not included in the path).
+            tuples. The first step describes the head entity and the
+            relation used to leave it. The final step is a sentinel
+            containing the tail entity with an empty relation string.
+            Path length equals the number of body atoms plus one.
         target_relation : str
             The relation of the target triple being learned.
         head_type : str
@@ -488,7 +495,14 @@ class RuleGeneralizer:
         path: Sequence[PathStep],
         ctx: _GeneralizationContext,
     ) -> Rule:
-        """Create a cyclic rule where both head variables appear in the body.
+        """Create a fully-variable-head rule from the walk path.
+
+        Both head positions are variables (``X`` and ``Y``).
+        :meth:`classify_rule` determines the actual type: this will be
+        ``CYCLIC`` when both variables appear in the body, or ``AC2``
+        when the walk forms a true cycle and the tail entity equals the
+        head entity (in which case ``Y`` is never bound and is absent
+        from the body).
 
         Parameters
         ----------
@@ -500,7 +514,8 @@ class RuleGeneralizer:
         Returns
         -------
         Rule
-            A cyclic rule.
+            A rule with variable head; type determined by
+            :meth:`classify_rule`.
         """
         head_atom = Atom(
             relation=ctx.target_relation,

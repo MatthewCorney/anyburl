@@ -10,7 +10,11 @@ from anyburl.rule import Atom, Rule, RuleType, Term
 
 
 def _make_ac1_subject_grounded() -> Rule:
-    """Create: lives_in(person:0, Y) :- born_in(X, Z0), near(Z0, Y)."""
+    """Create: lives_in(person:0, Y) :- born_in(X, Z0), near(Z0, Y).
+
+    X is a free variable. The evaluator pins X to person:0 when computing
+    the forward chain, which is the intended AC1 semantics.
+    """
     head = Atom(
         relation="lives_in",
         subject=Term.constant(0, node_type="person"),
