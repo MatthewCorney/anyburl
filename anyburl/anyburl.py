@@ -23,8 +23,8 @@ from .sampler import (
     WeightedTripleSampler,
 )
 from .walk import (
+    NumbaWalkEngine,
     RelationWeightedEdgeSelector,
-    UniformEdgeSelector,
     WalkConfig,
     WalkEngine,
     WalkStrategy,
@@ -125,8 +125,12 @@ def build_triple_sampler(
 def build_walk_engine(
     graph: HeteroGraph,
     config: WalkConfig,
-) -> WalkEngine:
-    """Build a WalkEngine with the correct edge selection strategy.
+) -> WalkEngine | NumbaWalkEngine:
+    """Build a walk engine for the configured strategy.
+
+    Uniform walks use the JIT-compiled :class:`NumbaWalkEngine`. The
+    relation-weighted strategy uses the reference :class:`WalkEngine`,
+    which the Numba kernel does not yet cover.
 
     Parameters
     ----------
@@ -137,7 +141,7 @@ def build_walk_engine(
 
     Returns
     -------
-    WalkEngine
+    WalkEngine | NumbaWalkEngine
         A walk engine instance.
 
     Raises
@@ -145,20 +149,16 @@ def build_walk_engine(
     ValueError
         If the walk strategy is not supported.
     """
-    generator = torch.Generator().manual_seed(config.seed)
-    selector: UniformEdgeSelector | RelationWeightedEdgeSelector
-
     if config.strategy is WalkStrategy.UNIFORM:
-        selector = UniformEdgeSelector(generator)
+        return NumbaWalkEngine(graph, config)
 
-    elif config.strategy is WalkStrategy.RELATION_WEIGHTED:
+    if config.strategy is WalkStrategy.RELATION_WEIGHTED:
+        generator = torch.Generator().manual_seed(config.seed)
         selector = RelationWeightedEdgeSelector(graph, generator)
+        return WalkEngine(graph, config, selector)
 
-    else:
-        msg = f"Unsupported walk strategy: {config.strategy}"
-        raise ValueError(msg)
-
-    return WalkEngine(graph, config, selector)
+    msg = f"Unsupported walk strategy: {config.strategy}"
+    raise ValueError(msg)
 
 
 class AnyBURL:

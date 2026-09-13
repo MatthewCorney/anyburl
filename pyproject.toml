@@ -11,6 +11,7 @@ dependencies = [
     "torch>=2.0.0",
     "torch-geometric>=2.4.0",
     "pandas (>=3.0.0,<4.0.0)",
+    "numba (>=0.67.0,<0.68.0)",
 ]
 
 [build-system]
@@ -62,6 +63,7 @@ ignore = [
 "tests/**/*.py" = ["S101", "D", "ARG", "PLR2004"]
 "anyburl/scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901"]
 "scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901", "B905", "E501"]
+"anyburl/walk/_numba_kernel.py" = ["PLR0913", "PLR0917", "PLR0912", "PLR0915", "C901"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["anyburl"]
@@ -104,6 +106,14 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["tqdm", "tqdm.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["numba", "numba.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "anyburl.walk._numba_kernel"
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
