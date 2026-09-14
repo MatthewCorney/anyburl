@@ -1,10 +1,12 @@
 """Rule quality evaluation: support, confidence, and head coverage."""
 
 import warnings
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import assert_never
 
+import numpy as np
 import torch
 from torch import Tensor
 from tqdm import tqdm
@@ -12,6 +14,9 @@ from tqdm import tqdm
 from ._logging import get_logger
 from .graph import EdgeTypeTuple, HeteroGraph
 from .rule import Atom, Rule, RuleConfig, RuleType, TermKind
+
+BodySignature = tuple[EdgeTypeTuple, ...]
+"""Ordered edge types of a rule body; shared by rules with the same chain."""
 
 logger = get_logger(__name__)
 
@@ -155,6 +160,92 @@ def _csr_intersection_count(mat_a: Tensor, mat_b: Tensor) -> int:
     return int(torch.isin(a_linear, b_linear).sum().item())
 
 
+@dataclass(frozen=True, slots=True)
+class _CsrArrays:
+    """Row-offset and column-index arrays of a CSR matrix as NumPy arrays.
+
+    Extracting the CSR structure once lets grouped evaluation slice many
+    rows in pure NumPy without per-rule torch dispatch.
+
+    Parameters
+    ----------
+    crow : np.ndarray
+        Compressed row offsets (length ``num_rows + 1``).
+    col : np.ndarray
+        Column indices for each stored non-zero.
+    """
+
+    crow: np.ndarray
+    col: np.ndarray
+
+    @classmethod
+    def from_csr(cls, matrix: Tensor) -> "_CsrArrays":
+        """Build from a sparse CSR tensor."""
+        return cls(
+            crow=matrix.crow_indices().numpy(),
+            col=matrix.col_indices().numpy(),
+        )
+
+    def row(self, index: int) -> np.ndarray:
+        """Return the stored column indices of row ``index``."""
+        start = int(self.crow[index])
+        end = int(self.crow[index + 1])
+        return self.col[start:end]
+
+
+def _ac1_metrics(
+    product: _CsrArrays,
+    head: _CsrArrays,
+    entity_id: int,
+    total_head_triples: int,
+) -> RuleMetrics:
+    """Compute AC1 metrics for one grounded entity from CSR rows.
+
+    Row ``entity_id`` of ``product`` holds the rule's predictions (the
+    forward chain for subject-grounded rules, the transposed chain for
+    object-grounded ones). Row ``entity_id`` of ``head`` holds the known
+    targets. This mirrors :meth:`RuleEvaluator._evaluate_ac1` exactly.
+
+    Parameters
+    ----------
+    product : _CsrArrays
+        Chain-product CSR rows (predictions).
+    head : _CsrArrays
+        Head-relation CSR rows (known targets).
+    entity_id : int
+        The grounded head entity id.
+    total_head_triples : int
+        Total triples with the head relation, for head coverage.
+
+    Returns
+    -------
+    RuleMetrics
+        Computed metrics.
+    """
+    predicted = product.row(entity_id)
+    num_predictions = int(predicted.size)
+    if num_predictions == 0:
+        return RuleMetrics(
+            support=0,
+            confidence=ZERO_CONFIDENCE,
+            head_coverage=ZERO_HEAD_COVERAGE,
+            num_predictions=0,
+        )
+
+    known = head.row(entity_id)
+    support = int(np.isin(predicted, known).sum())
+    confidence = support / num_predictions
+    head_coverage = (
+        support / total_head_triples if total_head_triples > 0 else ZERO_HEAD_COVERAGE
+    )
+    return RuleMetrics(
+        support=support,
+        confidence=confidence,
+        head_coverage=head_coverage,
+        num_predictions=num_predictions,
+    )
+
+
 class RuleEvaluator:
     """Evaluates rule quality using sparse CSR matmul against a graph.
 
@@ -219,9 +310,11 @@ class RuleEvaluator:
             Rules paired with their metrics, filtered to only those
             passing the configured thresholds.
         """
+        metrics_by_rule = self._compute_all_metrics(rules)
+
         results: list[tuple[Rule, RuleMetrics]] = []
-        for rule in tqdm(rules, desc="Evaluating Rules"):
-            metrics = self.evaluate(rule)
+        for rule in rules:
+            metrics = metrics_by_rule[rule]
             if metrics.passes_thresholds(
                 min_support=self._config.min_support,
                 min_confidence=self._config.min_confidence,
@@ -236,6 +329,188 @@ class RuleEvaluator:
             len(results),
         )
         return results
+
+    def _compute_all_metrics(
+        self,
+        rules: Sequence[Rule],
+    ) -> dict[Rule, RuleMetrics]:
+        """Compute metrics for every rule, grouping AC1 rules by body chain.
+
+        AC1 rules that share a body chain and grounding side reuse a single
+        chain-product matrix, avoiding a redundant sparse matmul per rule.
+        Other rule types are evaluated individually.
+
+        Parameters
+        ----------
+        rules : Sequence[Rule]
+            The rules to evaluate.
+
+        Returns
+        -------
+        dict[Rule, RuleMetrics]
+            Metrics keyed by rule.
+        """
+        metrics_by_rule: dict[Rule, RuleMetrics] = {}
+
+        ac1_rules = [r for r in rules if r.rule_type is RuleType.AC1]
+        other_rules = [r for r in rules if r.rule_type is not RuleType.AC1]
+
+        for rule in tqdm(other_rules, desc="Evaluating rules", disable=not other_rules):
+            if rule not in metrics_by_rule:
+                metrics_by_rule[rule] = self.evaluate(rule)
+
+        self._evaluate_ac1_groups(ac1_rules, metrics_by_rule)
+        return metrics_by_rule
+
+    def _evaluate_ac1_groups(
+        self,
+        rules: Sequence[Rule],
+        out: dict[Rule, RuleMetrics],
+    ) -> None:
+        """Group AC1 rules by body chain and grounding side, then evaluate.
+
+        Parameters
+        ----------
+        rules : Sequence[Rule]
+            The AC1 rules to evaluate.
+        out : dict[Rule, RuleMetrics]
+            Destination mapping, updated in place.
+        """
+        groups: dict[tuple[BodySignature, bool], list[Rule]] = defaultdict(list)
+        for rule in rules:
+            is_subject_grounded = rule.head.subject.kind is TermKind.CONSTANT
+            groups[(self._body_signature(rule), is_subject_grounded)].append(rule)
+
+        for (_, is_subject_grounded), group in tqdm(
+            groups.items(), desc="Evaluating AC1 groups", disable=not groups
+        ):
+            self._evaluate_ac1_group(
+                group, is_subject_grounded=is_subject_grounded, out=out
+            )
+
+    def _evaluate_ac1_group(
+        self,
+        rules: list[Rule],
+        *,
+        is_subject_grounded: bool,
+        out: dict[Rule, RuleMetrics],
+    ) -> None:
+        """Evaluate one AC1 group sharing a body chain and grounding side.
+
+        Parameters
+        ----------
+        rules : list[Rule]
+            Rules in the group (non-empty).
+        is_subject_grounded : bool
+            Whether the grounded head term is the subject.
+        out : dict[Rule, RuleMetrics]
+            Destination mapping, updated in place.
+        """
+        product = self._ac1_product(rules[0], is_subject_grounded=is_subject_grounded)
+        head_cache: dict[EdgeTypeTuple, tuple[_CsrArrays, int]] = {}
+        entity_cache: dict[tuple[EdgeTypeTuple, int], RuleMetrics] = {}
+
+        for rule in rules:
+            entity_id = self._ac1_entity_id(
+                rule, is_subject_grounded=is_subject_grounded
+            )
+            if entity_id is None:
+                out[rule] = self.evaluate(rule)
+                continue
+
+            head_et = self._find_head_edge_type(rule)
+            cache_key = (head_et, entity_id)
+            metrics = entity_cache.get(cache_key)
+            if metrics is None:
+                head, total_head = self._ac1_head(
+                    head_et, head_cache, is_subject_grounded=is_subject_grounded
+                )
+                metrics = _ac1_metrics(product, head, entity_id, total_head)
+                entity_cache[cache_key] = metrics
+            out[rule] = metrics
+
+    def _ac1_product(self, rule: Rule, *, is_subject_grounded: bool) -> _CsrArrays:
+        """Build the chain-product CSR rows for an AC1 group.
+
+        For subject-grounded rules this is the forward body-chain product;
+        for object-grounded rules it is the transposed product, built from
+        transposed body matrices so the large product is never transposed.
+
+        Parameters
+        ----------
+        rule : Rule
+            A representative rule from the group.
+        is_subject_grounded : bool
+            Whether the grounded head term is the subject.
+
+        Returns
+        -------
+        _CsrArrays
+            CSR rows of the (possibly transposed) chain product.
+        """
+        body = self._build_body_chain_matrices(rule)
+        if is_subject_grounded:
+            matrix = self._chain_multiply(body)
+        else:
+            matrix = self._chain_multiply(
+                [self._transpose_csr(m) for m in reversed(body)]
+            )
+        return _CsrArrays.from_csr(matrix)
+
+    def _ac1_head(
+        self,
+        head_et: EdgeTypeTuple,
+        cache: dict[EdgeTypeTuple, tuple[_CsrArrays, int]],
+        *,
+        is_subject_grounded: bool,
+    ) -> tuple[_CsrArrays, int]:
+        """Return CSR rows of the head relation and its total triple count.
+
+        Object-grounded rules need known *sources*, so the head matrix is
+        transposed. Results are cached by edge type.
+
+        Parameters
+        ----------
+        head_et : EdgeTypeTuple
+            The head edge type.
+        cache : dict[EdgeTypeTuple, tuple[_CsrArrays, int]]
+            Per-edge-type cache, updated in place.
+        is_subject_grounded : bool
+            Whether the grounded head term is the subject.
+
+        Returns
+        -------
+        tuple[_CsrArrays, int]
+            Head CSR rows and total head triple count.
+        """
+        cached = cache.get(head_et)
+        if cached is not None:
+            return cached
+
+        matrix = self._graph.get_csr_matrix(head_et)
+        if not is_subject_grounded:
+            matrix = self._transpose_csr(matrix)
+        value = (_CsrArrays.from_csr(matrix), self._graph.edge_count(head_et))
+        cache[head_et] = value
+        return value
+
+    def _body_signature(self, rule: Rule) -> BodySignature:
+        """Return the ordered body edge types identifying the chain product."""
+        return tuple(self._resolve_body_atom_edge_type(atom) for atom in rule.body)
+
+    @staticmethod
+    def _ac1_entity_id(rule: Rule, *, is_subject_grounded: bool) -> int | None:
+        """Return the grounded head entity id (subject or object)."""
+        term = rule.head.subject if is_subject_grounded else rule.head.object_
+        return term.entity_id
+
+    @staticmethod
+    def _transpose_csr(matrix: Tensor) -> Tensor:
+        """Return the transpose of a sparse CSR tensor as CSR."""
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
+            transposed: Tensor = matrix.to_sparse_coo().t().to_sparse_csr()  # type: ignore[no-untyped-call]
+            return transposed
 
     def _evaluate_cyclic(self, rule: Rule) -> RuleMetrics:
         """Evaluate a cyclic rule via sparse chain matmul.
