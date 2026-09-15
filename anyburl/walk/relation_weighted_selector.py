@@ -1,3 +1,5 @@
+"""Inverse-relation-frequency outgoing-edge-type selector for random walks."""
+
 import torch
 
 from ..graph import EdgeTypeTuple, HeteroGraph

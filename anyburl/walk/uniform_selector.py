@@ -1,3 +1,5 @@
+"""Uniform outgoing-edge-type selector for random walks."""
+
 import torch
 
 from ..graph import EdgeTypeTuple

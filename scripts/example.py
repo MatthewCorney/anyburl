@@ -1,6 +1,6 @@
 """End-to-end AnyBURL pipeline on the BIOKG dataset.
 
-Uses `AnyBURLPipeline` to learn rules from a real heterogeneous knowledge
+Uses :class:`AnyBURL` to learn rules from a real heterogeneous knowledge
 graph and print the best results.
 
 BIOKG has 4 node types (drug, function, phenotype, protein) and 83 edge

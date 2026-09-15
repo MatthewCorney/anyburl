@@ -7,14 +7,14 @@ Algorithm Pipeline
 ------------------
 The learning process follows four stages:
 
-1. **Sample** --- :class:`TripleSampler` draws target triples from the
-   graph according to a :class:`SamplingStrategy` (uniform, relation-
+1. **Sample** --- :func:`build_triple_sampler` draws target triples from
+   the graph according to a :class:`SamplingStrategy` (uniform, relation-
    proportional, or inverse-frequency weighted).
 
-2. **Walk** --- :class:`WalkEngine` performs bounded random walks from
-   each sampled triple's head entity, searching for paths that reach
-   the tail entity. Successful paths are returned as sequences of
-   :class:`~anyburl.rule.PathStep`.
+2. **Walk** --- a walk engine from :func:`build_walk_engine` performs
+   bounded random walks from each sampled triple's head entity, searching
+   for paths that reach the tail entity. Successful paths are returned as
+   sequences of :class:`~anyburl.rule.PathStep`.
 
 3. **Generalize** --- :class:`RuleGeneralizer` replaces concrete
    entities in each path with variables, producing typed Horn rules.
@@ -34,9 +34,11 @@ Module Layout
     :class:`HeteroGraph` wraps PyG ``HeteroData`` with precomputed CSR
     indices for O(1) neighbor lookup and sparse matmul.
 ``sampler``
-    :class:`TripleSampler` and :class:`SamplerConfig`.
+    :class:`SamplerConfig`, :class:`SamplingStrategy`, and the concrete
+    samplers (:class:`UniformTripleSampler`, :class:`WeightedTripleSampler`).
 ``walk``
-    :class:`WalkEngine` and :class:`WalkConfig`.
+    :class:`WalkConfig`, :class:`WalkStrategy`, and the walk engines
+    (:class:`NumbaWalkEngine`, :class:`WalkEngine`).
 ``rule``
     :class:`Rule`, :class:`Atom`, :class:`Term`, :class:`RuleGeneralizer`,
     and :class:`RuleConfig`.

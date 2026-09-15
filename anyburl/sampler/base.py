@@ -1,3 +1,5 @@
+"""Triple sampling configuration, the ``Triple`` record, and base sampler."""
+
 from dataclasses import dataclass
 from enum import StrEnum
 

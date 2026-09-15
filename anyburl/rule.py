@@ -5,6 +5,22 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
 from typing import assert_never
 
+# Variable name constants for rule generalization
+SUBJECT_VARIABLE: str = "X"
+OBJECT_VARIABLE: str = "Y"
+INTERMEDIATE_VARIABLE_PREFIX: str = "Z"
+
+# Default thresholds for rule quality
+DEFAULT_MIN_SUPPORT: int = 2
+DEFAULT_MIN_CONFIDENCE: float = 0.01
+DEFAULT_MIN_HEAD_COVERAGE: float = 0.01
+
+# Path step: (entity_id, node_type, relation_traversed_to_next_entity).
+# Each step's relation is the outgoing edge used to reach the NEXT step's
+# entity. The final step is a sentinel (tail_entity_id, tail_node_type, "")
+# whose empty relation string _build_body_atoms always discards.
+PathStep = tuple[int, str, str]
+
 
 class RuleType(StrEnum):
     """Classification of learned Horn rules by structural type.
@@ -40,17 +56,6 @@ class TermKind(Enum):
 
     VARIABLE = auto()
     CONSTANT = auto()
-
-
-# Variable name constants for rule generalization
-SUBJECT_VARIABLE: str = "X"
-OBJECT_VARIABLE: str = "Y"
-INTERMEDIATE_VARIABLE_PREFIX: str = "Z"
-
-# Default thresholds for rule quality
-DEFAULT_MIN_SUPPORT: int = 2
-DEFAULT_MIN_CONFIDENCE: float = 0.01
-DEFAULT_MIN_HEAD_COVERAGE: float = 0.01
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,13 +314,6 @@ class RuleConfig:
             raise ValueError(
                 f"min_head_coverage must be in [0.0, 1.0], got {self.min_head_coverage}"
             )
-
-
-# Path step: (entity_id, node_type, relation_traversed_to_next_entity)
-# Each step's relation is the outgoing edge used to reach the NEXT step's entity.
-# The final step is a sentinel: (tail_entity_id, tail_node_type, "") where the
-# empty relation string is a placeholder that _build_body_atoms always discards.
-PathStep = tuple[int, str, str]
 
 
 @dataclass(frozen=True, slots=True)
