@@ -61,6 +61,19 @@ class WalkEngine:
         return paths
 
     def _single_walk(self, triple: Triple) -> list[PathStep] | None:
+        """Attempt one random walk from the triple's head to its tail.
+
+        Parameters
+        ----------
+        triple : Triple
+            The target triple providing the walk's start and goal.
+
+        Returns
+        -------
+        list[PathStep] | None
+            The walk path if it reaches the tail within the configured
+            length bounds, otherwise ``None``.
+        """
         current_id = triple.head_id
         current_type = triple.head_type
         steps: list[PathStep] = []
@@ -100,6 +113,19 @@ class WalkEngine:
         return None
 
     def _select_edge_type(self, node_type: str) -> EdgeTypeTuple | None:
+        """Select an outgoing edge type from ``node_type`` via the selector.
+
+        Parameters
+        ----------
+        node_type : str
+            The current node type to step from.
+
+        Returns
+        -------
+        EdgeTypeTuple | None
+            The chosen edge type, or ``None`` if the node type has no
+            outgoing edges.
+        """
         candidates = self._graph.outgoing_edge_types(node_type)
         if not candidates:
             return None

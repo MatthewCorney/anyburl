@@ -97,11 +97,10 @@ class NumbaWalkEngine:
         seen: set[tuple[PathStep, ...]] = set()
         paths: list[list[PathStep]] = []
 
-        for attempt in range(self._config.max_attempts):
-            length = int(self._out_lengths[attempt])
-            if length == WALK_FAILED:
-                continue
-            path = self._decode_path(attempt, length)
+        successful = np.nonzero(self._out_lengths != WALK_FAILED)[0]
+        for attempt in successful:
+            index = int(attempt)
+            path = self._decode_path(index, int(self._out_lengths[index]))
             key = tuple(path)
             if key not in seen:
                 seen.add(key)

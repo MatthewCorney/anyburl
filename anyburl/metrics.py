@@ -131,33 +131,66 @@ def _csr_any_col(matrix: Tensor) -> Tensor:
     return mask
 
 
+DENSE_MASK_MAX_ELEMENTS: int = 200_000_000
+"""Row*col ceiling for the dense-mask intersection path (~200 MB as bool)."""
+
+
+def _csr_linear_indices(matrix: Tensor) -> Tensor:
+    """Return the flattened ``row * ncols + col`` index of each non-zero."""
+    crow = matrix.crow_indices()
+    col = matrix.col_indices()
+    row_nnz = (crow[1:] - crow[:-1]).to(torch.long)
+    rows = torch.repeat_interleave(
+        torch.arange(crow.numel() - 1, dtype=torch.long, device=col.device),
+        row_nnz,
+    )
+    return rows * matrix.shape[1] + col.to(torch.long)
+
+
+def _dense_mask_intersection_count(mat_a: Tensor, mat_b: Tensor) -> int:
+    """Count shared non-zeros via a dense boolean mask of the sparser matrix.
+
+    Building a ``row*col`` mask from the matrix with fewer non-zeros and
+    gathering the other matrix's coordinates is far faster than a set
+    intersection when one matrix is near-dense. Bounded by
+    :data:`DENSE_MASK_MAX_ELEMENTS`.
+    """
+    small, large = (
+        (mat_a, mat_b) if _csr_nnz(mat_a) <= _csr_nnz(mat_b) else (mat_b, mat_a)
+    )
+    n_rows, n_cols = mat_a.shape
+    mask = torch.zeros(n_rows * n_cols, dtype=torch.bool)
+    mask[_csr_linear_indices(small)] = True
+    return int(mask[_csr_linear_indices(large)].sum().item())
+
+
+def _linear_isin_intersection_count(mat_a: Tensor, mat_b: Tensor) -> int:
+    """Count shared non-zeros via ``isin`` on flattened indices (O(nnz) memory)."""
+    a_linear = _csr_linear_indices(mat_a)
+    b_linear = _csr_linear_indices(mat_b)
+    query, table = (
+        (a_linear, b_linear)
+        if a_linear.numel() <= b_linear.numel()
+        else (b_linear, a_linear)
+    )
+    return int(torch.isin(query, table).sum().item())
+
+
 def _csr_intersection_count(mat_a: Tensor, mat_b: Tensor) -> int:
-    """Count (row, col) pairs present as non-zeros in both CSR tensors."""
+    """Count (row, col) pairs present as non-zeros in both CSR tensors.
+
+    Uses a dense boolean mask when the ``row*col`` grid is small enough
+    (:data:`DENSE_MASK_MAX_ELEMENTS`), otherwise a memory-bounded ``isin``
+    on flattened indices.
+    """
     if mat_a.shape != mat_b.shape:
         raise ValueError(
             f"Shape mismatch in intersection count: {mat_a.shape} vs {mat_b.shape}"
         )
-    ncols = mat_a.shape[1]
-
-    a_crow = mat_a.crow_indices()
-    a_col = mat_a.col_indices()
-    a_row_nnz = (a_crow[1:] - a_crow[:-1]).to(torch.long)
-    a_rows = torch.repeat_interleave(
-        torch.arange(a_crow.numel() - 1, dtype=torch.long, device=a_col.device),
-        a_row_nnz,
-    )
-    a_linear = a_rows * ncols + a_col.to(torch.long)
-
-    b_crow = mat_b.crow_indices()
-    b_col = mat_b.col_indices()
-    b_row_nnz = (b_crow[1:] - b_crow[:-1]).to(torch.long)
-    b_rows = torch.repeat_interleave(
-        torch.arange(b_crow.numel() - 1, dtype=torch.long, device=b_col.device),
-        b_row_nnz,
-    )
-    b_linear = b_rows * ncols + b_col.to(torch.long)
-
-    return int(torch.isin(a_linear, b_linear).sum().item())
+    n_rows, n_cols = mat_a.shape
+    if n_rows * n_cols <= DENSE_MASK_MAX_ELEMENTS:
+        return _dense_mask_intersection_count(mat_a, mat_b)
+    return _linear_isin_intersection_count(mat_a, mat_b)
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +297,7 @@ class RuleEvaluator:
     def __init__(self, graph: HeteroGraph, config: RuleConfig) -> None:
         self._graph = graph
         self._config = config
+        self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
         """Compute quality metrics for a single rule.
@@ -772,7 +806,7 @@ class RuleEvaluator:
         relation = head.relation
 
         target: EdgeTypeTuple = (src_type, relation, dst_type)
-        if target in dict.fromkeys(self._graph.edge_types):
+        if target in self._edge_type_set:
             return target
 
         raise ValueError(f"No edge type matches rule head: {target!r}")
@@ -824,7 +858,7 @@ class RuleEvaluator:
         relation = atom.relation
 
         target: EdgeTypeTuple = (src_type, relation, dst_type)
-        if target in dict.fromkeys(self._graph.edge_types):
+        if target in self._edge_type_set:
             return target
 
         raise ValueError(f"No edge type matches body atom: {target!r}")
