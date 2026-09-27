@@ -362,41 +362,26 @@ class _CsrArrays:
 
 
 def _ac1_metrics(
-    product: _CsrArrays,
-    head: _CsrArrays,
-    product_row: int,
-    entity_id: int,
+    num_predictions: int,
+    support: int,
     total_head_triples: int,
 ) -> RuleMetrics:
-    """Compute AC1 metrics for one grounded entity from CSR rows.
-
-    Row ``entity_id`` of ``product`` holds the rule's predictions (the
-    forward chain for subject-grounded rules, the transposed chain for
-    object-grounded ones). Row ``entity_id`` of ``head`` holds the known
-    targets. This mirrors :meth:`RuleEvaluator._evaluate_ac1` exactly.
+    """Build AC1 metrics from one grounded entity's counts.
 
     Parameters
     ----------
-    product : _CsrArrays
-        Chain-product CSR rows (predictions).
-    head : _CsrArrays
-        Head-relation CSR rows (known targets).
-    product_row : int
-        Row of ``product`` holding this entity's predictions. The product
-        is built from only the group's grounded rows, so this is the
-        entity's position in that selection, not its entity id.
-    entity_id : int
-        The grounded head entity id, used to index ``head``.
+    num_predictions : int
+        Distinct entities the body chain reaches from the constant.
+    support : int
+        How many of those the head relation already connects.
     total_head_triples : int
-        Total triples with the head relation, for head coverage.
+        Triples carrying the head relation, for head coverage.
 
     Returns
     -------
     RuleMetrics
         Computed metrics.
     """
-    predicted = product.row(product_row)
-    num_predictions = int(predicted.size)
     if num_predictions == 0:
         return RuleMetrics(
             support=0,
@@ -404,17 +389,14 @@ def _ac1_metrics(
             head_coverage=ZERO_HEAD_COVERAGE,
             num_predictions=0,
         )
-
-    known = head.row(entity_id)
-    support = int(np.isin(predicted, known).sum())
-    confidence = support / num_predictions
-    head_coverage = (
-        support / total_head_triples if total_head_triples > 0 else ZERO_HEAD_COVERAGE
-    )
     return RuleMetrics(
         support=support,
-        confidence=confidence,
-        head_coverage=head_coverage,
+        confidence=support / num_predictions,
+        head_coverage=(
+            support / total_head_triples
+            if total_head_triples > 0
+            else ZERO_HEAD_COVERAGE
+        ),
         num_predictions=num_predictions,
     )
 
@@ -666,10 +648,9 @@ class RuleEvaluator:
     ) -> None:
         """Evaluate one AC1 group sharing a body chain and grounding side.
 
-        The group's grounded entities are processed in row blocks for the
-        same reason cyclic rules are: a BIOKG group can hold thousands of
-        grounded proteins, and pushing them all through a chain at once
-        rebuilds the whole-product blowup that blocking exists to avoid.
+        Every grounded entity in the group is scanned in a single kernel
+        call, so the group costs one pass over its constants rather than a
+        chain product per block of them.
 
         Parameters
         ----------
@@ -680,101 +661,71 @@ class RuleEvaluator:
         out : dict[Rule, RuleMetrics]
             Destination mapping, updated in place.
         """
-        rules_by_entity: dict[int, list[Rule]] = defaultdict(list)
+        pending: dict[EdgeTypeTuple, dict[int, list[Rule]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
         for rule in rules:
             entity_id = self._ac1_entity_id(
                 rule, is_subject_grounded=is_subject_grounded
             )
             if entity_id is None:
                 out[rule] = self.evaluate(rule)
-            else:
-                rules_by_entity[entity_id].append(rule)
+                continue
+            pending[self._find_head_edge_type(rule)][entity_id].append(rule)
 
-        context = _AC1GroupContext(
-            rules_by_entity=rules_by_entity,
-            head_cache={},
-            is_subject_grounded=is_subject_grounded,
-            out=out,
-        )
-        grounded_ids = sorted(rules_by_entity)
-
-        for start in range(0, len(grounded_ids), ROW_BLOCK_SIZE):
-            chunk = grounded_ids[start : start + ROW_BLOCK_SIZE]
-            product = self._ac1_product(
-                rules[0], chunk, is_subject_grounded=is_subject_grounded
+        signature = self._body_signature(rules[0])
+        for head_et, by_entity in pending.items():
+            self._score_ac1_entities(
+                signature,
+                head_et,
+                by_entity,
+                is_subject_grounded=is_subject_grounded,
+                out=out,
             )
-            self._assign_chunk_metrics(chunk, product, context)
 
-    def _assign_chunk_metrics(
+    def _score_ac1_entities(
         self,
-        chunk: Sequence[int],
-        product: _CsrArrays,
-        context: _AC1GroupContext,
-    ) -> None:
-        """Score one block of grounded entities against their head relation.
-
-        Parameters
-        ----------
-        chunk : Sequence[int]
-            Grounded entity ids whose rows ``product`` holds, in order.
-        product : _CsrArrays
-            Chain-product rows for exactly this chunk.
-        context : _AC1GroupContext
-            Shared group state, updated in place.
-        """
-        for row, entity_id in enumerate(chunk):
-            by_head: dict[EdgeTypeTuple, RuleMetrics] = {}
-            for rule in context.rules_by_entity[entity_id]:
-                head_et = self._find_head_edge_type(rule)
-                metrics = by_head.get(head_et)
-                if metrics is None:
-                    head, total_head = self._ac1_head(
-                        head_et,
-                        context.head_cache,
-                        is_subject_grounded=context.is_subject_grounded,
-                    )
-                    metrics = _ac1_metrics(product, head, row, entity_id, total_head)
-                    by_head[head_et] = metrics
-                context.out[rule] = metrics
-
-    def _ac1_product(
-        self,
-        rule: Rule,
-        grounded_ids: Sequence[int],
+        signature: BodySignature,
+        head_et: EdgeTypeTuple,
+        by_entity: dict[int, list[Rule]],
         *,
         is_subject_grounded: bool,
-    ) -> _CsrArrays:
-        """Build the chain-product CSR rows for an AC1 group.
-
-        For subject-grounded rules this is the forward body-chain product;
-        for object-grounded rules it is the transposed product, built from
-        transposed body matrices so the large product is never transposed.
+        out: dict[Rule, RuleMetrics],
+    ) -> None:
+        """Score every grounded entity sharing a chain and head relation.
 
         Parameters
         ----------
-        rule : Rule
-            A representative rule from the group.
+        signature : BodySignature
+            The shared body chain, in forward order.
+        head_et : EdgeTypeTuple
+            The head relation these rules predict.
+        by_entity : dict[int, list[Rule]]
+            Rules awaiting metrics, keyed by their grounded entity.
         is_subject_grounded : bool
-            Whether the grounded head term is the subject.
-
-        Returns
-        -------
-        _CsrArrays
-            CSR rows of the (possibly transposed) chain product.
+            Whether the grounded head term is the subject. Object-grounded
+            rules pin the chain's tail, so they are scanned in reverse.
+        out : dict[Rule, RuleMetrics]
+            Destination mapping, updated in place.
         """
-        body = self._build_body_chain_matrices(rule)
+        entities = sorted(by_entity)
+        rows = np.array(entities, dtype=np.int64)
         if is_subject_grounded:
-            chain = body
+            predictions, support = self._scanner.scan_rows(signature, head_et, rows)
         else:
-            chain = [self._transpose_csr(m) for m in reversed(body)]
+            predictions, support = self._scanner.scan_reversed_rows(
+                signature, head_et, rows
+            )
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-            matrix = _gather_csr_rows(chain[0], grounded_ids)
-            for step in chain[1:]:
-                matrix = matrix @ step
-                self._check_budget(_csr_nnz(matrix))
-        return _CsrArrays.from_csr(matrix)
+        total_head_triples = self._graph.edge_count(head_et)
+        for position, entity_id in enumerate(entities):
+            metrics = _ac1_metrics(
+                int(predictions[position]),
+                int(support[position]),
+                total_head_triples,
+            )
+            for rule in by_entity[entity_id]:
+                out[rule] = metrics
 
     def _ac1_head(
         self,

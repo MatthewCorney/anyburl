@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._chain_kernel import FRONTIER_SLOTS, scan_chain_rows
-from ._csr_tables import build_csr_tables
+from ._csr_tables import CsrDirection, CsrTables, build_csr_tables
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -23,6 +23,12 @@ if TYPE_CHECKING:
     from .graph import EdgeTypeTuple, HeteroGraph
 
 __all__ = ["ChainScanner"]
+
+
+def _swap(edge_type: EdgeTypeTuple) -> EdgeTypeTuple:
+    """Return an edge type with its endpoints exchanged."""
+    src_type, relation, dst_type = edge_type
+    return (dst_type, relation, src_type)
 
 
 class ChainScanner:
@@ -37,7 +43,50 @@ class ChainScanner:
     def __init__(self, graph: HeteroGraph) -> None:
         self._graph = graph
         self._tables = build_csr_tables(graph)
+        self._reverse_tables: CsrTables | None = None
         self._stamp_base = 0
+
+    def scan_reversed_rows(
+        self,
+        signature: Sequence[EdgeTypeTuple],
+        head_edge_type: EdgeTypeTuple,
+        rows: NDArray[np.int64],
+    ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+        """Scan a chain backwards, from its tail endpoint towards its head.
+
+        What an object-grounded AC1 rule needs: its constant sits on the tail,
+        so grounding runs from that entity back to the candidate heads. The
+        chain and the head relation are both transposed, and the reverse
+        tables are built on first use.
+
+        Parameters
+        ----------
+        signature : Sequence[EdgeTypeTuple]
+            Body edge types in *forward* chain order.
+        head_edge_type : EdgeTypeTuple
+            The relation the rule predicts, in its forward orientation.
+        rows : NDArray[np.int64]
+            Tail entity ids to scan from.
+
+        Returns
+        -------
+        tuple[NDArray[np.int64], NDArray[np.int64]]
+            Distinct heads reached per tail, and how many of those the head
+            relation already connects.
+        """
+        if self._reverse_tables is None:
+            self._reverse_tables = build_csr_tables(
+                self._graph, direction=CsrDirection.REVERSE
+            )
+        reversed_signature = tuple(
+            _swap(edge_type) for edge_type in reversed(tuple(signature))
+        )
+        return self._scan(
+            reversed_signature,
+            _swap(head_edge_type),
+            rows,
+            self._reverse_tables,
+        )
 
     def scan_all_rows(
         self,
@@ -86,21 +135,31 @@ class ChainScanner:
             Distinct entities reached per row, and how many of those the head
             relation already connects.
         """
+        return self._scan(signature, head_edge_type, rows, self._tables)
+
+    def _scan(
+        self,
+        signature: Sequence[EdgeTypeTuple],
+        head_edge_type: EdgeTypeTuple,
+        rows: NDArray[np.int64],
+        tables: CsrTables,
+    ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+        """Run the kernel over one direction's tables."""
         self._validate(signature, head_edge_type)
-        edge_ids = self._tables.edge_ids(signature)
-        head_crow, head_col = self._head_arrays(head_edge_type)
+        edge_ids = tables.edge_ids(signature)
+        head_crow, head_col = self._head_arrays(head_edge_type, tables)
 
         predictions = np.zeros(rows.shape[0], dtype=np.int64)
         support = np.zeros(rows.shape[0], dtype=np.int64)
         if rows.shape[0] == 0:
             return predictions, support
 
-        width = self._scratch_width(edge_ids, head_edge_type)
+        width = self._scratch_width(edge_ids, head_edge_type, tables)
         scan_chain_rows(
-            self._tables.crow_all,
-            self._tables.col_all,
-            self._tables.crow_offsets,
-            self._tables.col_offsets,
+            tables.crow_all,
+            tables.col_all,
+            tables.crow_offsets,
+            tables.col_offsets,
             edge_ids,
             head_crow,
             head_col,
@@ -119,14 +178,15 @@ class ChainScanner:
         self,
         edge_ids: NDArray[np.int64],
         head_edge_type: EdgeTypeTuple,
+        tables: CsrTables,
     ) -> int:
         """Return the widest node count any frontier or marker must hold."""
-        widths = [int(self._tables.num_dst_nodes[edge]) for edge in edge_ids]
+        widths = [int(tables.num_dst_nodes[edge]) for edge in edge_ids]
         widths.append(self._graph.node_count(head_edge_type[0]))
         return max(widths)
 
     def _head_arrays(
-        self, head_edge_type: EdgeTypeTuple
+        self, head_edge_type: EdgeTypeTuple, tables: CsrTables
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Return the head relation's CSR arrays, padded when it has no edges.
 
@@ -134,17 +194,17 @@ class ChainScanner:
         index, yet the kernel still needs a row-offset array to read.
         """
         num_rows = self._graph.node_count(head_edge_type[0])
-        if self._graph.edge_count(head_edge_type) == 0:
+        if head_edge_type not in tables.edge_type_to_id:
             return (
                 np.zeros(num_rows + 1, dtype=np.int64),
                 np.zeros(0, dtype=np.int64),
             )
-        head_id = self._tables.edge_type_to_id[head_edge_type]
-        crow = self._tables.crow_all[
-            self._tables.crow_offsets[head_id] : self._tables.crow_offsets[head_id + 1]
+        head_id = tables.edge_type_to_id[head_edge_type]
+        crow = tables.crow_all[
+            tables.crow_offsets[head_id] : tables.crow_offsets[head_id + 1]
         ]
-        col = self._tables.col_all[
-            self._tables.col_offsets[head_id] : self._tables.col_offsets[head_id + 1]
+        col = tables.col_all[
+            tables.col_offsets[head_id] : tables.col_offsets[head_id + 1]
         ]
         return crow, col
 

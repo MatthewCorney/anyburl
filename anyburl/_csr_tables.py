@@ -14,10 +14,14 @@ start.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
+from torch_geometric.utils import to_torch_csr_tensor
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -26,7 +30,25 @@ if TYPE_CHECKING:
 
     from .graph import EdgeTypeTuple, HeteroGraph
 
-__all__ = ["CsrTables", "build_csr_tables"]
+__all__ = ["CsrDirection", "CsrTables", "build_csr_tables"]
+
+
+class CsrDirection(StrEnum):
+    """Which way the tables traverse each edge type.
+
+    Attributes
+    ----------
+    FORWARD : str
+        Edges as stored, keyed by their own edge type.
+    REVERSE : str
+        Every edge type transposed and keyed by its swapped tuple
+        ``(dst_type, relation, src_type)``. Needed to ground an
+        object-grounded AC1 rule, which propagates from its constant tail
+        back towards candidate heads.
+    """
+
+    FORWARD = "forward"
+    REVERSE = "reverse"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +111,11 @@ class CsrTables:
         return np.array([self.edge_type_to_id[et] for et in signature], dtype=np.int64)
 
 
-def build_csr_tables(graph: HeteroGraph) -> CsrTables:
+def build_csr_tables(
+    graph: HeteroGraph,
+    *,
+    direction: CsrDirection = CsrDirection.FORWARD,
+) -> CsrTables:
     """Lower a graph's CSR indices into concatenated integer arrays.
 
     Edge types with no edges are skipped, matching
@@ -99,24 +125,37 @@ def build_csr_tables(graph: HeteroGraph) -> CsrTables:
     ----------
     graph : HeteroGraph
         The source graph.
+    direction : CsrDirection
+        Whether to store each edge type as-is or transposed.
 
     Returns
     -------
     CsrTables
         Tables ready to index from a kernel.
     """
-    edge_types = [et for et in graph.edge_types if graph.edge_count(et) > 0]
+    stored = [et for et in graph.edge_types if graph.edge_count(et) > 0]
 
     crow_blocks: list[NDArray[np.int64]] = []
     col_blocks: list[NDArray[np.int64]] = []
     num_src: list[int] = []
     num_dst: list[int] = []
-    for edge_type in edge_types:
-        index = graph._get_csr_index(edge_type)
-        crow_blocks.append(_as_int64(index.crow_indices))
-        col_blocks.append(_as_int64(index.col_indices))
-        num_src.append(index.num_src)
-        num_dst.append(index.num_dst)
+    edge_types: list[EdgeTypeTuple] = []
+    for edge_type in stored:
+        if direction is CsrDirection.FORWARD:
+            index = graph._get_csr_index(edge_type)
+            crow, col = _as_int64(index.crow_indices), _as_int64(index.col_indices)
+            rows, cols = index.num_src, index.num_dst
+            edge_types.append(edge_type)
+        else:
+            src_type, relation, dst_type = edge_type
+            rows = graph.node_count(dst_type)
+            cols = graph.node_count(src_type)
+            crow, col = _reverse_csr(graph.edge_index(edge_type), rows, cols)
+            edge_types.append((dst_type, relation, src_type))
+        crow_blocks.append(crow)
+        col_blocks.append(col)
+        num_src.append(rows)
+        num_dst.append(cols)
 
     return CsrTables(
         crow_all=_concat(crow_blocks),
@@ -127,6 +166,19 @@ def build_csr_tables(graph: HeteroGraph) -> CsrTables:
         num_dst_nodes=np.array(num_dst, dtype=np.int64),
         edge_type_to_id={et: i for i, et in enumerate(edge_types)},
     )
+
+
+def _reverse_csr(
+    edge_index: torch.Tensor,
+    num_rows: int,
+    num_cols: int,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Return the CSR structure of an edge type with its endpoints swapped."""
+    flipped = torch.stack([edge_index[1], edge_index[0]])
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
+        matrix = to_torch_csr_tensor(flipped, size=(num_rows, num_cols))
+    return _as_int64(matrix.crow_indices()), _as_int64(matrix.col_indices())
 
 
 def _as_int64(tensor: object) -> NDArray[np.int64]:
