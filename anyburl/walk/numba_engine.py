@@ -8,7 +8,7 @@ and tests are unaffected.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 import numpy as np
 
@@ -16,7 +16,8 @@ from .._logging import get_logger
 from ..rule import PathStep
 from ._numba_graph import NO_RELATION_ID, build_numba_graph_view
 from ._numba_kernel import STEP_FIELDS, WALK_FAILED, run_walks
-from .base import WalkConfig
+from ._reachability import MAX_TRACKED_STEPS, build_step_tables
+from .base import EdgeWeighting, WalkConfig, WalkStrategy
 from .walker import EMPTY_RELATION
 
 if TYPE_CHECKING:
@@ -29,22 +30,65 @@ logger = get_logger(__name__)
 class NumbaWalkEngine:
     """Runs random walks via a JIT-compiled kernel over integer arrays.
 
+    Supports :attr:`WalkStrategy.UNIFORM` and
+    :attr:`WalkStrategy.REACHABILITY_PRUNED`; both run the same kernel,
+    differing only in the candidate table it indexes.
+
     Parameters
     ----------
     graph : HeteroGraph
         The knowledge graph to walk over.
     config : WalkConfig
-        Walk configuration (lengths, attempts, seed).
+        Walk configuration (lengths, attempts, seed, strategy).
     """
 
     def __init__(self, graph: HeteroGraph, config: WalkConfig) -> None:
         self._config = config
         self._view = build_numba_graph_view(graph)
+        self._steps = build_step_tables(
+            self._view,
+            prune=config.strategy is WalkStrategy.REACHABILITY_PRUNED,
+            weights=self._edge_weights(graph, config.edge_weighting),
+        )
         self._call_index = 0
 
         buffer_shape = (config.max_attempts, config.max_length + 1, STEP_FIELDS)
         self._out_buffer = np.empty(buffer_shape, dtype=np.int64)
         self._out_lengths = np.empty(config.max_attempts, dtype=np.int64)
+
+    def _edge_weights(
+        self, graph: HeteroGraph, weighting: EdgeWeighting
+    ) -> np.ndarray | None:
+        """Return a per-edge-type selection weight, or ``None`` for uniform.
+
+        Parameters
+        ----------
+        graph : HeteroGraph
+            The graph whose edge counts drive the weighting.
+        weighting : EdgeWeighting
+            The scheme to apply.
+
+        Returns
+        -------
+        np.ndarray | None
+            Weight per edge-type id, or ``None`` when every candidate is
+            equally likely.
+        """
+        match weighting:
+            case EdgeWeighting.UNIFORM:
+                return None
+            case EdgeWeighting.INVERSE_FREQUENCY:
+                counts = np.array(
+                    [
+                        max(1, graph.edge_count(et))
+                        for et in graph.edge_types
+                        if graph.edge_count(et) > 0
+                    ],
+                    dtype=np.float64,
+                )
+                return 1.0 / counts
+            case _ as unreachable:
+                assert_never(unreachable)
 
     def walk_from_triple(self, triple: Triple) -> list[list[PathStep]]:
         """Run random walks from a target triple's head toward its tail.
@@ -70,8 +114,11 @@ class NumbaWalkEngine:
             view.crow_offsets,
             view.col_offsets,
             view.edge_dst_type,
-            view.node_out_edges,
-            view.node_out_offsets,
+            self._steps.edges,
+            self._steps.offsets,
+            self._steps.cumulative_weights,
+            self._steps.num_node_types,
+            MAX_TRACKED_STEPS,
             triple.head_id,
             start_type,
             triple.tail_id,

@@ -28,11 +28,17 @@ class SamplingStrategy(StrEnum):
     RELATION_INVERSE : str
         Sample inversely proportional to relation frequency. Rarer
         relations get more samples, improving coverage.
+    ENTITY_BALANCED : str
+        Draw a *head entity* uniformly, then one of its edges. Uniform
+        edge sampling draws a head with probability proportional to its
+        degree, so rules end up describing hubs; this spends the budget
+        evenly across entities instead.
     """
 
     UNIFORM = "uniform"
     RELATION_PROPORTIONAL = "relation_proportional"
     RELATION_INVERSE = "relation_inverse"
+    ENTITY_BALANCED = "entity_balanced"
 
 
 @dataclass(frozen=True, slots=True)

@@ -32,8 +32,11 @@ def run_walks(
     crow_offsets: np.ndarray,
     col_offsets: np.ndarray,
     edge_dst_type: np.ndarray,
-    node_out_edges: np.ndarray,
-    node_out_offsets: np.ndarray,
+    step_edges: np.ndarray,
+    step_offsets: np.ndarray,
+    step_cumulative: np.ndarray,
+    num_node_types: int,
+    max_tracked_steps: int,
     start_id: int,
     start_type: int,
     tail_id: int,
@@ -49,10 +52,18 @@ def run_walks(
 
     Parameters
     ----------
-    crow_all, col_all, crow_offsets, col_offsets, edge_dst_type,
-    node_out_edges, node_out_offsets : np.ndarray
+    crow_all, col_all, crow_offsets, col_offsets, edge_dst_type : np.ndarray
         Flat integer graph arrays from
         :func:`~anyburl.walk._numba_graph.build_numba_graph_view`.
+    step_edges, step_offsets, step_cumulative : np.ndarray
+        Candidate edge types per (target type, node type, steps remaining)
+        from :func:`~anyburl.walk._reachability.build_step_tables`. An
+        unpruned table reproduces uniform selection exactly; a pruned one
+        drops edge types that cannot reach ``tail_type`` in time.
+        ``step_cumulative`` holds each block's running selection weight,
+        ending at 1.0, so a uniform block is evenly spaced.
+    num_node_types, max_tracked_steps : int
+        Shape constants for decoding a block index in ``step_offsets``.
     start_id, start_type : int
         Local node id and node-type id of the walk origin.
     tail_id, tail_type : int
@@ -77,11 +88,21 @@ def run_walks(
         current_type = start_type
 
         for step in range(max_len):
-            out_start = node_out_offsets[current_type]
-            num_out = node_out_offsets[current_type + 1] - out_start
+            steps_left = min(max_len - step, max_tracked_steps)
+            block = (tail_type * num_node_types + current_type) * (
+                max_tracked_steps + 1
+            ) + steps_left
+            out_start = step_offsets[block]
+            num_out = step_offsets[block + 1] - out_start
             if num_out == 0:
                 break
-            edge = node_out_edges[out_start + np.random.randint(0, num_out)]
+            draw = np.random.random()
+            choice = out_start
+            while choice < out_start + num_out - 1:
+                if step_cumulative[choice] >= draw:
+                    break
+                choice += 1
+            edge = step_edges[choice]
 
             crow_base = crow_offsets[edge]
             row_start = crow_all[crow_base + current_id]

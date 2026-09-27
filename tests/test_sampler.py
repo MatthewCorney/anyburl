@@ -1,14 +1,18 @@
 """Tests for triple samplers."""
 
+from collections import Counter
+
 import pytest
 import torch
 
 from anyburl.anyburl import build_triple_sampler
 from anyburl.graph import HeteroGraph
 from anyburl.sampler import (
+    EntityBalancedTripleSampler,
     SamplerConfig,
     SamplingStrategy,
     Triple,
+    UniformTripleSampler,
     WeightedTripleSampler,
 )
 
@@ -123,3 +127,82 @@ def test_weighted_sampler_wrong_weight_count(simple_graph: HeteroGraph) -> None:
     wrong_weights = torch.ones(99)
     with pytest.raises(ValueError, match="Weights must match"):
         WeightedTripleSampler(simple_graph, config, wrong_weights)
+
+
+def test_entity_balanced_sampler_returns_requested_count(
+    simple_graph: HeteroGraph,
+) -> None:
+    config = SamplerConfig(
+        sample_size=10, strategy=SamplingStrategy.ENTITY_BALANCED, seed=1
+    )
+
+    triples = EntityBalancedTripleSampler(simple_graph, config).sample()
+
+    assert len(triples) == 10
+
+
+def test_entity_balanced_sampler_caps_at_the_edge_count(
+    simple_graph: HeteroGraph,
+) -> None:
+    """Like the other samplers, it never returns more triples than edges."""
+    config = SamplerConfig(
+        sample_size=10_000, strategy=SamplingStrategy.ENTITY_BALANCED, seed=1
+    )
+
+    triples = EntityBalancedTripleSampler(simple_graph, config).sample()
+
+    assert len(triples) == simple_graph.total_edge_count()
+
+
+def test_entity_balanced_sampler_is_deterministic(
+    simple_graph: HeteroGraph,
+) -> None:
+    config = SamplerConfig(
+        sample_size=20, strategy=SamplingStrategy.ENTITY_BALANCED, seed=7
+    )
+
+    first = EntityBalancedTripleSampler(simple_graph, config).sample()
+    second = EntityBalancedTripleSampler(simple_graph, config).sample()
+
+    assert first == second
+
+
+def test_entity_balanced_sampler_yields_real_edges(
+    simple_graph: HeteroGraph,
+) -> None:
+    """Every sampled triple must be an edge that exists."""
+    target = ("person", "lives_in", "city")
+    config = SamplerConfig(
+        sample_size=30,
+        strategy=SamplingStrategy.ENTITY_BALANCED,
+        target_edge_type=target,
+        seed=3,
+    )
+
+    triples = EntityBalancedTripleSampler(simple_graph, config).sample()
+
+    edge_index = simple_graph.edge_index(target)
+    edges = set(zip(edge_index[0].tolist(), edge_index[1].tolist(), strict=True))
+    assert all((t.head_id, t.tail_id) in edges for t in triples)
+
+
+def test_entity_balanced_sampler_flattens_degree_skew(
+    simple_graph: HeteroGraph,
+) -> None:
+    """A hub must not dominate the sample the way uniform edge draws allow."""
+    target = ("person", "lives_in", "city")
+    kwargs = {"sample_size": 400, "target_edge_type": target, "seed": 11}
+
+    balanced = EntityBalancedTripleSampler(
+        simple_graph,
+        SamplerConfig(strategy=SamplingStrategy.ENTITY_BALANCED, **kwargs),
+    ).sample()
+    uniform = UniformTripleSampler(
+        simple_graph, SamplerConfig(strategy=SamplingStrategy.UNIFORM, **kwargs)
+    ).sample()
+
+    def top_share(triples: list[Triple]) -> float:
+        counts = Counter(t.head_id for t in triples)
+        return counts.most_common(1)[0][1] / len(triples)
+
+    assert top_share(balanced) <= top_share(uniform)
