@@ -3,12 +3,13 @@
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Protocol, assert_never
 
 import torch
 
 from ._logging import get_logger
 from .graph import HeteroGraph
-from .prediction import RulePredictor
 from .sampler import Triple
 
 logger = get_logger(__name__)
@@ -18,6 +19,88 @@ DEFAULT_K_VALUES: tuple[int, ...] = (1, 3, 10)
 
 FILTERED_SCORE: float = -1.0
 """Score assigned to known triples during filtered evaluation."""
+
+TIE_MIDPOINT_FRACTION: float = 0.5
+"""Share of a tie group counted as ranking above the target under AVERAGE."""
+
+
+class TieHandling(StrEnum):
+    """How to rank a target that scores equal to other candidates.
+
+    Rule-based scores are coarse --- many candidates share a score, so
+    the choice here moves the headline metric substantially and should
+    be stated whenever results are reported.
+
+    Attributes
+    ----------
+    OPTIMISTIC : str
+        Count only strictly better candidates, placing the target at the
+        top of its tie group. Inflates MRR when ties are large.
+    AVERAGE : str
+        Place the target at the midpoint of its tie group. The standard
+        choice in the link prediction literature, and the default.
+    PESSIMISTIC : str
+        Place the target at the bottom of its tie group.
+    """
+
+    OPTIMISTIC = "optimistic"
+    AVERAGE = "average"
+    PESSIMISTIC = "pessimistic"
+
+
+def rank_with_ties(
+    scores: torch.Tensor,
+    target_index: int,
+    tie_handling: TieHandling = TieHandling.AVERAGE,
+) -> float:
+    """Return the 1-based rank of ``target_index`` under a tie policy.
+
+    Parameters
+    ----------
+    scores : Tensor
+        1-D score tensor over all candidates.
+    target_index : int
+        Index of the entity being ranked.
+    tie_handling : TieHandling
+        Policy for candidates scoring exactly equal to the target.
+
+    Returns
+    -------
+    float
+        The rank, fractional under :attr:`TieHandling.AVERAGE`.
+    """
+    target_score = float(scores[target_index].item())
+    num_better = int((scores > target_score).sum().item())
+    num_tied = int((scores == target_score).sum().item()) - 1
+
+    match tie_handling:
+        case TieHandling.OPTIMISTIC:
+            return float(num_better + 1)
+        case TieHandling.AVERAGE:
+            return num_better + 1 + num_tied * TIE_MIDPOINT_FRACTION
+        case TieHandling.PESSIMISTIC:
+            return float(num_better + num_tied + 1)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+class EntityScorer(Protocol):
+    """Scores candidate entities for a link prediction query.
+
+    :class:`~anyburl.prediction.RulePredictor` satisfies this, and so do
+    the heuristics in :mod:`anyburl.baselines`. Evaluating both through
+    one interface is what makes a learned MRR interpretable: on DBLP a
+    plain co-author path count already reaches 0.1374, so a rule model
+    scoring 0.19 is worth +38% over that, not 90x over zero.
+    """
+
+    def score_tails(self, head_id: int) -> torch.Tensor:
+        """Return scores over all candidate tails for ``head_id``."""
+        ...
+
+    def score_heads(self, tail_id: int) -> torch.Tensor:
+        """Return scores over all candidate heads for ``tail_id``."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +114,13 @@ class EvaluationConfig:
     filter_known : bool
         If ``True``, filter out known triples when computing ranks
         (the standard "filtered" setting).
+    tie_handling : TieHandling
+        How to rank a target tied with other candidates.
     """
 
     k_values: tuple[int, ...] = DEFAULT_K_VALUES
     filter_known: bool = True
+    tie_handling: TieHandling = TieHandling.AVERAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +158,9 @@ class LinkPredictionEvaluator:
 
     Parameters
     ----------
-    predictor : RulePredictor
-        A pre-built predictor with cached chain products.
+    predictor : EntityScorer
+        Anything that scores candidates --- a fitted
+        :class:`~anyburl.prediction.RulePredictor` or a baseline.
     graph : HeteroGraph
         The knowledge graph (used for filtering known triples).
     config : EvaluationConfig
@@ -82,7 +169,7 @@ class LinkPredictionEvaluator:
 
     def __init__(
         self,
-        predictor: RulePredictor,
+        predictor: EntityScorer,
         graph: HeteroGraph,
         config: EvaluationConfig,
     ) -> None:
@@ -122,7 +209,7 @@ class LinkPredictionEvaluator:
 
         head_to_tails, tail_to_heads = self._build_adjacency_index(head_edge_type)
 
-        ranks: list[int] = []
+        ranks: list[float] = []
 
         for triple in test_triples:
             tail_rank = self._compute_tail_rank(
@@ -142,7 +229,7 @@ class LinkPredictionEvaluator:
         head_id: int,
         true_tail_id: int,
         head_to_tails: dict[int, set[int]],
-    ) -> int:
+    ) -> float:
         """Compute the filtered rank of the true tail entity.
 
         Parameters
@@ -156,8 +243,9 @@ class LinkPredictionEvaluator:
 
         Returns
         -------
-        int
-            The rank of the true tail (1-based).
+        float
+            The rank of the true tail (1-based), fractional when tied
+            under :attr:`TieHandling.AVERAGE`.
         """
         scores = self._predictor.score_tails(head_id)
 
@@ -166,15 +254,14 @@ class LinkPredictionEvaluator:
                 scores, true_tail_id, head_to_tails.get(head_id, set())
             )
 
-        true_score = float(scores[true_tail_id].item())
-        return int((scores > true_score).sum().item()) + 1
+        return rank_with_ties(scores, true_tail_id, self._config.tie_handling)
 
     def _compute_head_rank(
         self,
         true_head_id: int,
         tail_id: int,
         tail_to_heads: dict[int, set[int]],
-    ) -> int:
+    ) -> float:
         """Compute the filtered rank of the true head entity.
 
         Parameters
@@ -188,8 +275,9 @@ class LinkPredictionEvaluator:
 
         Returns
         -------
-        int
-            The rank of the true head (1-based).
+        float
+            The rank of the true head (1-based), fractional when tied
+            under :attr:`TieHandling.AVERAGE`.
         """
         scores = self._predictor.score_heads(tail_id)
 
@@ -198,8 +286,7 @@ class LinkPredictionEvaluator:
                 scores, true_head_id, tail_to_heads.get(tail_id, set())
             )
 
-        true_score = float(scores[true_head_id].item())
-        return int((scores > true_score).sum().item()) + 1
+        return rank_with_ties(scores, true_head_id, self._config.tie_handling)
 
     @staticmethod
     def _filter_tail_scores(
@@ -285,12 +372,12 @@ class LinkPredictionEvaluator:
 
         return dict(head_to_tails), dict(tail_to_heads)
 
-    def _aggregate_ranks(self, ranks: list[int]) -> LinkPredictionMetrics:
+    def _aggregate_ranks(self, ranks: list[float]) -> LinkPredictionMetrics:
         """Aggregate ranks into MRR and Hits@K metrics.
 
         Parameters
         ----------
-        ranks : list[int]
+        ranks : list[float]
             List of 1-based ranks.
 
         Returns

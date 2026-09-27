@@ -1,7 +1,7 @@
 """Horn rule representation, configuration, and generalization."""
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import Enum, StrEnum, auto
 from typing import assert_never
 
@@ -280,8 +280,8 @@ class Rule:
 
 
 @dataclass(frozen=True, slots=True)
-class RuleConfig:
-    """Configuration for rule generalization and filtering.
+class RuleThresholds:
+    """Quality floors a rule must clear to be retained.
 
     Parameters
     ----------
@@ -317,10 +317,97 @@ class RuleConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuleConfig:
+    """Configuration for rule generalization and filtering.
+
+    The top-level floors apply to every rule type unless ``per_type``
+    overrides them.
+
+    **Why per-type floors exist.** Head coverage is ``support`` over *all*
+    triples of the head relation. A cyclic rule ranges over the whole
+    relation and can approach 1.0, but an AC1 rule is pinned to one entity,
+    so its support cannot exceed that entity's degree and its achievable
+    head coverage is smaller by orders of magnitude. Judging both against
+    one floor does not rank them, it deletes the pinned ones: on DBLP a
+    0.005 floor admitted 3 of 3 cyclic rules and 0 of 6,517
+    object-grounded AC1 rules, whose ceiling was 0.00034. Give a rule type
+    its own floors rather than one it cannot reach.
+
+    Parameters
+    ----------
+    min_support : int
+        Default minimum support threshold.
+    min_confidence : float
+        Default minimum confidence threshold in [0.0, 1.0].
+    min_head_coverage : float
+        Default minimum head coverage threshold in [0.0, 1.0].
+    per_type : Mapping[RuleType, RuleThresholds]
+        Floors that replace the defaults for the named rule types.
+    max_chain_predictions : int | None
+        Abandon a body chain once it is known to predict more than this
+        many pairs. ``None`` (the default) never abandons one.
+
+        This is a *resource* limit, not a quality judgement: a chain over
+        budget is reported as unevaluated rather than as a failing rule.
+        In practice the two coincide --- on BIOKG the chains that exhaust
+        memory are the ones that predict almost everything and rank
+        nothing, such as ``interacts_with -> interacts_with ->
+        is_annotated_to`` at 93.2M predictions and confidence 0.0020,
+        against a best rule making 501k predictions at confidence 0.2975.
+
+    Raises
+    ------
+    ValueError
+        If any default parameter is out of its valid range.
+    """
+
+    min_support: int = DEFAULT_MIN_SUPPORT
+    min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    min_head_coverage: float = DEFAULT_MIN_HEAD_COVERAGE
+    per_type: Mapping[RuleType, RuleThresholds] = field(default_factory=dict)
+    max_chain_predictions: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        self.default_thresholds()
+        if self.max_chain_predictions is not None and self.max_chain_predictions < 1:
+            raise ValueError(
+                "max_chain_predictions must be positive, got "
+                f"{self.max_chain_predictions}"
+            )
+
+    def default_thresholds(self) -> RuleThresholds:
+        """Return the floors applied to rule types without an override."""
+        return RuleThresholds(
+            min_support=self.min_support,
+            min_confidence=self.min_confidence,
+            min_head_coverage=self.min_head_coverage,
+        )
+
+    def thresholds_for(self, rule_type: RuleType) -> RuleThresholds:
+        """Return the floors a rule of this type must clear.
+
+        Parameters
+        ----------
+        rule_type : RuleType
+            The rule type being filtered.
+
+        Returns
+        -------
+        RuleThresholds
+            The override for this type, else the defaults.
+        """
+        override = self.per_type.get(rule_type)
+        if override is not None:
+            return override
+        return self.default_thresholds()
+
+
+@dataclass(frozen=True, slots=True)
 class _GeneralizationContext:
     """Internal context shared across rule generalization methods."""
 
-    variable_map: dict[tuple[int, str], str]
+    variable_map: dict[int, str]
     target_relation: str
     head_type: str
     tail_type: str
@@ -447,12 +534,13 @@ class RuleGeneralizer:
         path: Sequence[PathStep],
         *,
         head_type: str,
-    ) -> dict[tuple[int, str], str]:
-        """Assign variable names to entities in a walk path.
+    ) -> dict[int, str]:
+        """Assign a canonical variable name to each position in a walk path.
 
-        The head entity gets ``X``, the tail entity gets ``Y``, and
-        intermediate entities get ``Z0``, ``Z1``, etc. Repeated
-        entities receive the same variable.
+        Variables are keyed by **position**, not by entity identity: the
+        first step gets ``X``, the last gets ``Y``, and every intermediate
+        position gets a fresh ``Z0``, ``Z1``, ... even where the walk
+        revisits an entity.
 
         Parameters
         ----------
@@ -463,28 +551,23 @@ class RuleGeneralizer:
 
         Returns
         -------
-        dict[tuple[int, str], str]
-            Mapping from ``(entity_id, node_type)`` to variable name.
+        dict[int, str]
+            Mapping from path position to variable name.
         """
-        variable_map: dict[tuple[int, str], str] = {}
-        intermediate_counter = 0
+        last_position = len(path) - 1
+        variable_map: dict[int, str] = {0: SUBJECT_VARIABLE}
 
-        head_entity_id, _, _ = path[0]
-        head_key = (head_entity_id, head_type)
-        variable_map[head_key] = SUBJECT_VARIABLE
+        if last_position > 0:
+            tail_entity_id, tail_node_type, _ = path[last_position]
+            returns_to_head = (
+                tail_entity_id == path[0][0] and tail_node_type == head_type
+            )
+            variable_map[last_position] = (
+                SUBJECT_VARIABLE if returns_to_head else OBJECT_VARIABLE
+            )
 
-        tail_entity_id, tail_node_type, _ = path[-1]
-        tail_key = (tail_entity_id, tail_node_type)
-        if tail_key not in variable_map:
-            variable_map[tail_key] = OBJECT_VARIABLE
-
-        for entity_id, node_type, _ in path[1:-1]:
-            key = (entity_id, node_type)
-            if key not in variable_map:
-                variable_map[key] = (
-                    f"{INTERMEDIATE_VARIABLE_PREFIX}{intermediate_counter}"
-                )
-                intermediate_counter += 1
+        for position in range(1, last_position):
+            variable_map[position] = f"{INTERMEDIATE_VARIABLE_PREFIX}{position - 1}"
 
         return variable_map
 
@@ -595,11 +678,11 @@ class RuleGeneralizer:
         """
         atoms: list[Atom] = []
         for i in range(len(path) - 1):
-            src_id, src_type, relation = path[i]
-            dst_id, dst_type, _ = path[i + 1]
+            _, src_type, relation = path[i]
+            _, dst_type, _ = path[i + 1]
 
-            src_var = ctx.variable_map[(src_id, src_type)]
-            dst_var = ctx.variable_map[(dst_id, dst_type)]
+            src_var = ctx.variable_map[i]
+            dst_var = ctx.variable_map[i + 1]
 
             atom = Atom(
                 relation=relation,

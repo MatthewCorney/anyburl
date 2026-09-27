@@ -1,5 +1,6 @@
 """Tests for RuleEvaluator."""
 
+import logging
 import warnings
 
 import pytest
@@ -7,6 +8,7 @@ import torch
 
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import (
+    ChainBudgetExceededError,
     RuleEvaluator,
     RuleMetrics,
     _csr_intersection_count,
@@ -294,3 +296,105 @@ def test_grouped_batch_matches_single_evaluate(
 
     for rule in rules:
         assert grouped[rule] == evaluator.evaluate(rule)
+
+
+def test_warns_when_head_coverage_alone_eliminates_a_type(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The DBLP failure mode: rules good on support and confidence, floored out."""
+    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.99)
+    evaluator = RuleEvaluator(evaluator_graph, config)
+
+    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+        evaluator.evaluate_batch([cyclic_rule])
+
+    assert "not comparable across rule types" in caplog.text
+
+
+def test_does_not_warn_when_rules_are_simply_poor(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A type failing on support is not a threshold-scale problem."""
+    config = RuleConfig(min_support=10_000, min_confidence=0.0, min_head_coverage=0.99)
+    evaluator = RuleEvaluator(evaluator_graph, config)
+
+    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+        evaluator.evaluate_batch([cyclic_rule])
+
+    assert "not comparable across rule types" not in caplog.text
+
+
+def test_does_not_warn_without_a_head_coverage_floor(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule, caplog: pytest.LogCaptureFixture
+) -> None:
+    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
+    evaluator = RuleEvaluator(evaluator_graph, config)
+
+    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+        evaluator.evaluate_batch([cyclic_rule])
+
+    assert "not comparable across rule types" not in caplog.text
+
+
+def test_no_budget_by_default(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> None:
+    """The guard is opt-in; nothing changes until a budget is set."""
+    assert RuleConfig().max_chain_predictions is None
+
+    evaluator = RuleEvaluator(evaluator_graph, RuleConfig(min_support=1))
+    assert evaluator.evaluate(cyclic_rule).num_predictions > 0
+
+
+def test_budget_abandons_an_oversized_chain(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule
+) -> None:
+    config = RuleConfig(min_support=1, max_chain_predictions=1)
+    evaluator = RuleEvaluator(evaluator_graph, config)
+
+    with pytest.raises(ChainBudgetExceededError) as raised:
+        evaluator.evaluate(cyclic_rule)
+
+    assert raised.value.budget == 1
+    assert raised.value.predictions > 1
+
+
+def test_generous_budget_leaves_metrics_unchanged(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule
+) -> None:
+    """A budget above the chain's size must not perturb the result."""
+    unbounded = RuleEvaluator(evaluator_graph, RuleConfig(min_support=1)).evaluate(
+        cyclic_rule
+    )
+    bounded = RuleEvaluator(
+        evaluator_graph, RuleConfig(min_support=1, max_chain_predictions=10_000)
+    ).evaluate(cyclic_rule)
+
+    assert bounded == unbounded
+
+
+def test_batch_skips_over_budget_rules_without_failing(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An abandoned chain is reported as unevaluated, not as a failing rule."""
+    config = RuleConfig(min_support=1, min_confidence=0.0, max_chain_predictions=1)
+    evaluator = RuleEvaluator(evaluator_graph, config)
+
+    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+        results = evaluator.evaluate_batch([cyclic_rule])
+
+    assert results == []
+    assert "unevaluated, not rejected" in caplog.text
+
+
+def test_over_budget_rule_absent_rather_than_zeroed(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule
+) -> None:
+    """Absence is honest; zero metrics would claim the rule predicts nothing."""
+    config = RuleConfig(min_support=1, max_chain_predictions=1)
+    evaluator = RuleEvaluator(evaluator_graph, config)
+
+    assert cyclic_rule not in evaluator._compute_all_metrics([cyclic_rule])
+
+
+def test_invalid_budget_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_chain_predictions must be positive"):
+        RuleConfig(max_chain_predictions=0)

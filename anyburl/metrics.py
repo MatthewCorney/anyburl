@@ -20,6 +20,30 @@ BodySignature = tuple[EdgeTypeTuple, ...]
 
 logger = get_logger(__name__)
 
+
+class ChainBudgetExceededError(RuntimeError):
+    """Raised when a body chain predicts more pairs than the budget allows.
+
+    Carries what was known when the scan stopped, so a caller can report
+    why a rule went unevaluated rather than silently dropping it.
+
+    Parameters
+    ----------
+    predictions : int
+        Predictions counted before abandoning the chain.
+    budget : int
+        The configured ceiling.
+    """
+
+    def __init__(self, predictions: int, budget: int) -> None:
+        super().__init__(
+            f"body chain predicts at least {predictions} pairs, over the "
+            f"max_chain_predictions budget of {budget}"
+        )
+        self.predictions = predictions
+        self.budget = budget
+
+
 ZERO_CONFIDENCE: float = 0.0
 ZERO_HEAD_COVERAGE: float = 0.0
 
@@ -134,6 +158,116 @@ def _csr_any_col(matrix: Tensor) -> Tensor:
 DENSE_MASK_MAX_ELEMENTS: int = 200_000_000
 """Row*col ceiling for the dense-mask intersection path (~200 MB as bool)."""
 
+MAX_FOLDED_TAIL_NNZ: int = 20_000_000
+"""Largest suffix product worth precomputing and reusing across row blocks.
+
+A chain is multiplied as ``rows @ (rest of chain)`` when the right-hand side
+is this small, because the suffix is then computed once instead of once per
+block. On BIOKG's worst chain the suffix holds 8.2M non-zeros against the
+93.2M of the full product, which cuts peak memory by 17% and is slightly
+faster. Above this the suffix would be dearer to keep than to recompute.
+"""
+
+ROW_BLOCK_SIZE: int = 1024
+"""Source rows multiplied through a chain at once.
+
+A whole chain product can be far larger than memory on a dense graph --- a
+single BIOKG chain is estimated at 3.9 GB --- while support and prediction
+counts are plain sums over disjoint row blocks. Multiplying a block at a
+time bounds peak memory without approximating anything.
+"""
+
+
+def _select_csr_rows(matrix: Tensor, start: int, stop: int) -> Tensor:
+    """Return rows ``[start, stop)`` of a CSR tensor as its own CSR tensor.
+
+    Parameters
+    ----------
+    matrix : Tensor
+        A sparse CSR tensor.
+    start, stop : int
+        Half-open row range.
+
+    Returns
+    -------
+    Tensor
+        A CSR tensor with ``stop - start`` rows and the same column count.
+    """
+    crow = matrix.crow_indices()
+    first = int(crow[start].item())
+    last = int(crow[stop].item())
+    return torch.sparse_csr_tensor(
+        crow[start : stop + 1] - first,
+        matrix.col_indices()[first:last],
+        matrix.values()[first:last],
+        size=(stop - start, matrix.shape[1]),
+    )
+
+
+def _fold_chain_tail(chain: Sequence[Tensor]) -> Tensor | None:
+    """Precompute a chain's suffix when it is cheaper to keep than to repeat.
+
+    Matrix chain association changes the size of the intermediates
+    dramatically. Multiplying a block of source rows left to right rebuilds
+    a large intermediate for every block; folding the suffix once and
+    multiplying ``rows @ suffix`` reuses one small matrix throughout.
+
+    Parameters
+    ----------
+    chain : Sequence[Tensor]
+        Body atom matrices in chain order.
+
+    Returns
+    -------
+    Tensor | None
+        The product of ``chain[1:]``, or ``None`` when the chain is too
+        short to benefit or the suffix grew past
+        :data:`MAX_FOLDED_TAIL_NNZ`.
+    """
+    if len(chain) < 3:  # noqa: PLR2004
+        return None
+    tail = chain[-1]
+    for matrix in reversed(chain[1:-1]):
+        tail = matrix @ tail
+        if _csr_nnz(tail) > MAX_FOLDED_TAIL_NNZ:
+            return None
+    return tail
+
+
+def _gather_csr_rows(matrix: Tensor, row_ids: Sequence[int]) -> Tensor:
+    """Return the named rows of a CSR tensor, in the order given.
+
+    Parameters
+    ----------
+    matrix : Tensor
+        A sparse CSR tensor.
+    row_ids : Sequence[int]
+        Row indices to gather.
+
+    Returns
+    -------
+    Tensor
+        A CSR tensor with one row per entry of ``row_ids``.
+    """
+    crow = matrix.crow_indices()
+    col = matrix.col_indices()
+    val = matrix.values()
+    offsets = [0]
+    cols: list[Tensor] = []
+    vals: list[Tensor] = []
+    for row_id in row_ids:
+        first = int(crow[row_id].item())
+        last = int(crow[row_id + 1].item())
+        cols.append(col[first:last])
+        vals.append(val[first:last])
+        offsets.append(offsets[-1] + last - first)
+    return torch.sparse_csr_tensor(
+        torch.tensor(offsets, dtype=crow.dtype),
+        torch.cat(cols) if cols else col[:0],
+        torch.cat(vals) if vals else val[:0],
+        size=(len(row_ids), matrix.shape[1]),
+    )
+
 
 def _csr_linear_indices(matrix: Tensor) -> Tensor:
     """Return the flattened ``row * ncols + col`` index of each non-zero."""
@@ -229,6 +363,7 @@ class _CsrArrays:
 def _ac1_metrics(
     product: _CsrArrays,
     head: _CsrArrays,
+    product_row: int,
     entity_id: int,
     total_head_triples: int,
 ) -> RuleMetrics:
@@ -245,8 +380,12 @@ def _ac1_metrics(
         Chain-product CSR rows (predictions).
     head : _CsrArrays
         Head-relation CSR rows (known targets).
+    product_row : int
+        Row of ``product`` holding this entity's predictions. The product
+        is built from only the group's grounded rows, so this is the
+        entity's position in that selection, not its entity id.
     entity_id : int
-        The grounded head entity id.
+        The grounded head entity id, used to index ``head``.
     total_head_triples : int
         Total triples with the head relation, for head coverage.
 
@@ -255,7 +394,7 @@ def _ac1_metrics(
     RuleMetrics
         Computed metrics.
     """
-    predicted = product.row(entity_id)
+    predicted = product.row(product_row)
     num_predictions = int(predicted.size)
     if num_predictions == 0:
         return RuleMetrics(
@@ -279,6 +418,28 @@ def _ac1_metrics(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _AC1GroupContext:
+    """State shared while scoring one AC1 group's blocks of entities.
+
+    Parameters
+    ----------
+    rules_by_entity : dict[int, list[Rule]]
+        Rules awaiting metrics, keyed by grounded entity.
+    head_cache : dict[EdgeTypeTuple, tuple[_CsrArrays, int]]
+        Head-relation rows cached across blocks, updated in place.
+    is_subject_grounded : bool
+        Whether the grounded head term is the subject.
+    out : dict[Rule, RuleMetrics]
+        Destination mapping, updated in place.
+    """
+
+    rules_by_entity: dict[int, list[Rule]]
+    head_cache: dict[EdgeTypeTuple, tuple[_CsrArrays, int]]
+    is_subject_grounded: bool
+    out: dict[Rule, RuleMetrics]
+
+
 class RuleEvaluator:
     """Evaluates rule quality using sparse CSR matmul against a graph.
 
@@ -298,6 +459,8 @@ class RuleEvaluator:
         self._graph = graph
         self._config = config
         self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
+        self._warned_types: set[RuleType] = set()
+        self._over_budget = 0
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
         """Compute quality metrics for a single rule.
@@ -348,21 +511,84 @@ class RuleEvaluator:
 
         results: list[tuple[Rule, RuleMetrics]] = []
         for rule in rules:
-            metrics = metrics_by_rule[rule]
+            metrics = metrics_by_rule.get(rule)
+            if metrics is None:
+                continue
+            thresholds = self._config.thresholds_for(rule.rule_type)
             if metrics.passes_thresholds(
-                min_support=self._config.min_support,
-                min_confidence=self._config.min_confidence,
-                min_head_coverage=self._config.min_head_coverage,
+                min_support=thresholds.min_support,
+                min_confidence=thresholds.min_confidence,
+                min_head_coverage=thresholds.min_head_coverage,
             ):
                 results.append((rule, metrics))
                 if max_results is not None and len(results) >= max_results:
                     break
         logger.debug(
-            "Evaluated %d rules, %d passed thresholds",
+            "Evaluated %d rules, %d passed thresholds, %d over budget",
             len(rules),
             len(results),
+            self._over_budget,
         )
+        self._warn_on_eliminated_types(rules, metrics_by_rule)
         return results
+
+    def _warn_on_eliminated_types(
+        self,
+        rules: Sequence[Rule],
+        metrics_by_rule: dict[Rule, RuleMetrics],
+    ) -> None:
+        """Warn when head coverage alone wipes out an entire rule type.
+
+        Head coverage is ``support`` over *all* head triples, so a rule
+        pinned to one entity cannot reach the value a cyclic rule reaches;
+        judging both against one floor deletes the pinned ones silently.
+        The signal is specific: rules of a type that clear support and
+        confidence, yet every one fails head coverage. Rules that are
+        simply poor fail the other floors too and are not reported.
+
+        Parameters
+        ----------
+        rules : Sequence[Rule]
+            The rules that were evaluated.
+        metrics_by_rule : dict[Rule, RuleMetrics]
+            Their computed metrics.
+        """
+        by_type: dict[RuleType, list[RuleMetrics]] = defaultdict(list)
+        for rule in rules:
+            evaluated = metrics_by_rule.get(rule)
+            if evaluated is not None:
+                by_type[rule.rule_type].append(evaluated)
+
+        for rule_type, metrics in by_type.items():
+            if rule_type in self._warned_types:
+                continue
+            thresholds = self._config.thresholds_for(rule_type)
+            if thresholds.min_head_coverage <= 0.0:
+                continue
+            otherwise_eligible = [
+                m
+                for m in metrics
+                if m.support >= thresholds.min_support
+                and m.confidence >= thresholds.min_confidence
+            ]
+            if not otherwise_eligible:
+                continue
+            if any(
+                m.head_coverage >= thresholds.min_head_coverage
+                for m in otherwise_eligible
+            ):
+                continue
+            self._warned_types.add(rule_type)
+            logger.warning(
+                "All %d %s rules that met support and confidence were removed "
+                "by min_head_coverage=%.5f; the best any of them reached was "
+                "%.5f. Head coverage is not comparable across rule types -- "
+                "give this one its own floor via RuleConfig.per_type.",
+                len(otherwise_eligible),
+                rule_type.value,
+                thresholds.min_head_coverage,
+                max(m.head_coverage for m in otherwise_eligible),
+            )
 
     def _compute_all_metrics(
         self,
@@ -385,13 +611,17 @@ class RuleEvaluator:
             Metrics keyed by rule.
         """
         metrics_by_rule: dict[Rule, RuleMetrics] = {}
+        self._over_budget = 0
 
         ac1_rules = [r for r in rules if r.rule_type is RuleType.AC1]
         other_rules = [r for r in rules if r.rule_type is not RuleType.AC1]
 
         for rule in tqdm(other_rules, desc="Evaluating rules", disable=not other_rules):
             if rule not in metrics_by_rule:
-                metrics_by_rule[rule] = self.evaluate(rule)
+                try:
+                    metrics_by_rule[rule] = self.evaluate(rule)
+                except ChainBudgetExceededError as exceeded:
+                    self._report_over_budget(rule, exceeded)
 
         self._evaluate_ac1_groups(ac1_rules, metrics_by_rule)
         return metrics_by_rule
@@ -418,9 +648,12 @@ class RuleEvaluator:
         for (_, is_subject_grounded), group in tqdm(
             groups.items(), desc="Evaluating AC1 groups", disable=not groups
         ):
-            self._evaluate_ac1_group(
-                group, is_subject_grounded=is_subject_grounded, out=out
-            )
+            try:
+                self._evaluate_ac1_group(
+                    group, is_subject_grounded=is_subject_grounded, out=out
+                )
+            except ChainBudgetExceededError as exceeded:
+                self._report_over_budget(group[0], exceeded, group_size=len(group))
 
     def _evaluate_ac1_group(
         self,
@@ -431,6 +664,11 @@ class RuleEvaluator:
     ) -> None:
         """Evaluate one AC1 group sharing a body chain and grounding side.
 
+        The group's grounded entities are processed in row blocks for the
+        same reason cyclic rules are: a BIOKG group can hold thousands of
+        grounded proteins, and pushing them all through a chain at once
+        rebuilds the whole-product blowup that blocking exists to avoid.
+
         Parameters
         ----------
         rules : list[Rule]
@@ -440,30 +678,70 @@ class RuleEvaluator:
         out : dict[Rule, RuleMetrics]
             Destination mapping, updated in place.
         """
-        product = self._ac1_product(rules[0], is_subject_grounded=is_subject_grounded)
-        head_cache: dict[EdgeTypeTuple, tuple[_CsrArrays, int]] = {}
-        entity_cache: dict[tuple[EdgeTypeTuple, int], RuleMetrics] = {}
-
+        rules_by_entity: dict[int, list[Rule]] = defaultdict(list)
         for rule in rules:
             entity_id = self._ac1_entity_id(
                 rule, is_subject_grounded=is_subject_grounded
             )
             if entity_id is None:
                 out[rule] = self.evaluate(rule)
-                continue
+            else:
+                rules_by_entity[entity_id].append(rule)
 
-            head_et = self._find_head_edge_type(rule)
-            cache_key = (head_et, entity_id)
-            metrics = entity_cache.get(cache_key)
-            if metrics is None:
-                head, total_head = self._ac1_head(
-                    head_et, head_cache, is_subject_grounded=is_subject_grounded
-                )
-                metrics = _ac1_metrics(product, head, entity_id, total_head)
-                entity_cache[cache_key] = metrics
-            out[rule] = metrics
+        context = _AC1GroupContext(
+            rules_by_entity=rules_by_entity,
+            head_cache={},
+            is_subject_grounded=is_subject_grounded,
+            out=out,
+        )
+        grounded_ids = sorted(rules_by_entity)
 
-    def _ac1_product(self, rule: Rule, *, is_subject_grounded: bool) -> _CsrArrays:
+        for start in range(0, len(grounded_ids), ROW_BLOCK_SIZE):
+            chunk = grounded_ids[start : start + ROW_BLOCK_SIZE]
+            product = self._ac1_product(
+                rules[0], chunk, is_subject_grounded=is_subject_grounded
+            )
+            self._assign_chunk_metrics(chunk, product, context)
+
+    def _assign_chunk_metrics(
+        self,
+        chunk: Sequence[int],
+        product: _CsrArrays,
+        context: _AC1GroupContext,
+    ) -> None:
+        """Score one block of grounded entities against their head relation.
+
+        Parameters
+        ----------
+        chunk : Sequence[int]
+            Grounded entity ids whose rows ``product`` holds, in order.
+        product : _CsrArrays
+            Chain-product rows for exactly this chunk.
+        context : _AC1GroupContext
+            Shared group state, updated in place.
+        """
+        for row, entity_id in enumerate(chunk):
+            by_head: dict[EdgeTypeTuple, RuleMetrics] = {}
+            for rule in context.rules_by_entity[entity_id]:
+                head_et = self._find_head_edge_type(rule)
+                metrics = by_head.get(head_et)
+                if metrics is None:
+                    head, total_head = self._ac1_head(
+                        head_et,
+                        context.head_cache,
+                        is_subject_grounded=context.is_subject_grounded,
+                    )
+                    metrics = _ac1_metrics(product, head, row, entity_id, total_head)
+                    by_head[head_et] = metrics
+                context.out[rule] = metrics
+
+    def _ac1_product(
+        self,
+        rule: Rule,
+        grounded_ids: Sequence[int],
+        *,
+        is_subject_grounded: bool,
+    ) -> _CsrArrays:
         """Build the chain-product CSR rows for an AC1 group.
 
         For subject-grounded rules this is the forward body-chain product;
@@ -484,11 +762,16 @@ class RuleEvaluator:
         """
         body = self._build_body_chain_matrices(rule)
         if is_subject_grounded:
-            matrix = self._chain_multiply(body)
+            chain = body
         else:
-            matrix = self._chain_multiply(
-                [self._transpose_csr(m) for m in reversed(body)]
-            )
+            chain = [self._transpose_csr(m) for m in reversed(body)]
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
+            matrix = _gather_csr_rows(chain[0], grounded_ids)
+            for step in chain[1:]:
+                matrix = matrix @ step
+                self._check_budget(_csr_nnz(matrix))
         return _CsrArrays.from_csr(matrix)
 
     def _ac1_head(
@@ -560,9 +843,10 @@ class RuleEvaluator:
             Computed metrics.
         """
         chain = self._build_body_chain_matrices(rule)
-        prediction_matrix = self._chain_multiply(chain)
+        head_et = self._find_head_edge_type(rule)
+        head_matrix = self._graph.get_csr_matrix(head_et)
 
-        num_predictions = _csr_nnz(prediction_matrix)
+        num_predictions, support = self._scan_chain_blocks(chain, head_matrix)
 
         if num_predictions == 0:
             return RuleMetrics(
@@ -572,9 +856,6 @@ class RuleEvaluator:
                 num_predictions=0,
             )
 
-        head_et = self._find_head_edge_type(rule)
-        head_matrix = self._graph.get_csr_matrix(head_et)
-        support = _csr_intersection_count(prediction_matrix, head_matrix)
         confidence = support / num_predictions
         total_head_triples = self._graph.edge_count(head_et)
         head_coverage = (
@@ -589,6 +870,107 @@ class RuleEvaluator:
             head_coverage=head_coverage,
             num_predictions=num_predictions,
         )
+
+    def _scan_chain_blocks(
+        self,
+        chain: list[Tensor],
+        head_matrix: Tensor,
+    ) -> tuple[int, int]:
+        """Count predictions and support by multiplying the chain in row blocks.
+
+        Equivalent to multiplying the whole chain and comparing against the
+        head relation, but peak memory is bounded by one block's product
+        rather than the full one.
+
+        Parameters
+        ----------
+        chain : list[Tensor]
+            Body atom matrices in chain order.
+        head_matrix : Tensor
+            The head relation's adjacency matrix.
+
+        Returns
+        -------
+        tuple[int, int]
+            ``(num_predictions, support)`` summed over all blocks.
+
+        Raises
+        ------
+        ChainBudgetExceededError
+            If the running prediction count passes
+            ``RuleConfig.max_chain_predictions``.
+        """
+        num_rows = int(chain[0].shape[0])
+        num_predictions = 0
+        support = 0
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
+            tail = _fold_chain_tail(chain)
+            remainder = chain[1:] if tail is None else (tail,)
+            for start in range(0, num_rows, ROW_BLOCK_SIZE):
+                stop = min(start + ROW_BLOCK_SIZE, num_rows)
+                block = _select_csr_rows(chain[0], start, stop)
+                for matrix in remainder:
+                    block = block @ matrix
+                block_nnz = _csr_nnz(block)
+                if block_nnz == 0:
+                    continue
+                num_predictions += block_nnz
+                self._check_budget(num_predictions)
+                support += _csr_intersection_count(
+                    block, _select_csr_rows(head_matrix, start, stop)
+                )
+
+        return num_predictions, support
+
+    def _report_over_budget(
+        self,
+        rule: Rule,
+        exceeded: ChainBudgetExceededError,
+        *,
+        group_size: int = 1,
+    ) -> None:
+        """Log that a chain was abandoned, naming it so the gap is visible.
+
+        Parameters
+        ----------
+        rule : Rule
+            A rule using the abandoned chain.
+        exceeded : ChainBudgetExceededError
+            The raised budget error.
+        group_size : int
+            How many rules shared the abandoned chain.
+        """
+        self._over_budget += group_size
+        chain = " -> ".join(atom.relation for atom in rule.body)
+        logger.warning(
+            "Skipped %d %s rule(s) on chain %s: at least %d predictions, over "
+            "the max_chain_predictions budget of %d. These rules are "
+            "unevaluated, not rejected.",
+            group_size,
+            rule.rule_type.value,
+            chain,
+            exceeded.predictions,
+            exceeded.budget,
+        )
+
+    def _check_budget(self, predictions: int) -> None:
+        """Abandon the chain if it has already outgrown the budget.
+
+        Parameters
+        ----------
+        predictions : int
+            Predictions counted so far.
+
+        Raises
+        ------
+        ChainBudgetExceededError
+            If a budget is configured and ``predictions`` exceeds it.
+        """
+        budget = self._config.max_chain_predictions
+        if budget is not None and predictions > budget:
+            raise ChainBudgetExceededError(predictions, budget)
 
     def _evaluate_ac1(self, rule: Rule) -> RuleMetrics:
         """Evaluate an AC1 rule with one grounded head entity.

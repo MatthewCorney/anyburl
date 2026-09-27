@@ -7,6 +7,7 @@ from anyburl.rule import (
     Rule,
     RuleConfig,
     RuleGeneralizer,
+    RuleThresholds,
     RuleType,
     Term,
     TermKind,
@@ -347,3 +348,108 @@ def test_generalize_keeps_same_edge_type_different_variables() -> None:
     )
 
     assert len(rules) == 3
+
+
+def test_revisited_entity_gets_fresh_variable() -> None:
+    """A walk returning to the head must not emit a repeated body variable.
+
+    The evaluator grounds bodies by edge type alone, so a repeated
+    variable would be scored as though unconstrained.
+    """
+    generalizer = RuleGeneralizer(RuleConfig())
+    path = [
+        (0, "author", "to"),
+        (5, "paper", "to"),
+        (0, "author", "to"),
+        (9, "paper", ""),
+    ]
+
+    rules = generalizer.generalize(
+        path,
+        target_relation="to",
+        head_type="author",
+        tail_type="paper",
+    )
+
+    cyclic = next(r for r in rules if r.rule_type is RuleType.CYCLIC)
+    body_variables = [(atom.subject.name, atom.object_.name) for atom in cyclic.body]
+    assert body_variables == [("X", "Z0"), ("Z0", "Z1"), ("Z1", "Y")]
+
+
+def test_paths_differing_only_by_revisit_generalize_identically() -> None:
+    """Revisit pattern must not split one chain into several scored rules."""
+    generalizer = RuleGeneralizer(RuleConfig())
+    revisiting = [
+        (0, "author", "to"),
+        (5, "paper", "to"),
+        (0, "author", "to"),
+        (9, "paper", ""),
+    ]
+    distinct = [
+        (0, "author", "to"),
+        (5, "paper", "to"),
+        (7, "author", "to"),
+        (9, "paper", ""),
+    ]
+
+    def generalize(path: list[tuple[int, str, str]]) -> set[str]:
+        return {
+            str(rule)
+            for rule in generalizer.generalize(
+                path,
+                target_relation="to",
+                head_type="author",
+                tail_type="paper",
+            )
+            if rule.rule_type is RuleType.CYCLIC
+        }
+
+    assert generalize(revisiting) == generalize(distinct)
+
+
+def test_walk_returning_to_head_still_yields_ac2() -> None:
+    """A tail equal to the head binds the last position to X, giving AC2."""
+    generalizer = RuleGeneralizer(RuleConfig())
+    path = [(0, "person", "knows"), (3, "person", "knows"), (0, "person", "")]
+
+    rules = generalizer.generalize(
+        path,
+        target_relation="knows",
+        head_type="person",
+        tail_type="person",
+    )
+
+    assert RuleType.AC2 in {r.rule_type for r in rules}
+
+
+def test_thresholds_default_to_the_config_wide_floors() -> None:
+    config = RuleConfig(min_support=5, min_confidence=0.2, min_head_coverage=0.3)
+
+    for rule_type in RuleType:
+        thresholds = config.thresholds_for(rule_type)
+        assert thresholds.min_support == 5
+        assert thresholds.min_confidence == 0.2
+        assert thresholds.min_head_coverage == 0.3
+
+
+def test_per_type_override_replaces_the_defaults() -> None:
+    """AC1 rules are pinned to one entity and cannot reach a global floor."""
+    config = RuleConfig(
+        min_support=5,
+        min_confidence=0.2,
+        min_head_coverage=0.3,
+        per_type={
+            RuleType.AC1: RuleThresholds(
+                min_support=2, min_confidence=0.5, min_head_coverage=0.0
+            )
+        },
+    )
+
+    ac1 = config.thresholds_for(RuleType.AC1)
+    assert (ac1.min_support, ac1.min_confidence, ac1.min_head_coverage) == (2, 0.5, 0.0)
+    assert config.thresholds_for(RuleType.CYCLIC).min_head_coverage == 0.3
+
+
+def test_invalid_threshold_override_is_rejected() -> None:
+    with pytest.raises(ValueError, match="min_confidence must be in"):
+        RuleThresholds(min_confidence=1.5)

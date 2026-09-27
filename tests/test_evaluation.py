@@ -1,11 +1,14 @@
 """Tests for LinkPredictionEvaluator."""
 
 import pytest
+import torch
 
 from anyburl.evaluation import (
     EvaluationConfig,
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
+    TieHandling,
+    rank_with_ties,
 )
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
@@ -189,3 +192,31 @@ def test_link_prediction_metrics_frozen() -> None:
     metrics = LinkPredictionMetrics(mrr=0.5)
     with pytest.raises(AttributeError):
         metrics.mrr = 0.8  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("tie_handling", "expected"),
+    [
+        (TieHandling.OPTIMISTIC, 2.0),
+        (TieHandling.AVERAGE, 3.0),
+        (TieHandling.PESSIMISTIC, 4.0),
+    ],
+)
+def test_rank_with_ties_policies(tie_handling: TieHandling, expected: float) -> None:
+    """One candidate ranks above the target; two more tie with it."""
+    scores = torch.tensor([0.5, 0.5, 0.5, 0.9])
+
+    assert rank_with_ties(scores, 0, tie_handling) == expected
+
+
+def test_rank_with_ties_untied_target_is_unaffected_by_policy() -> None:
+    scores = torch.tensor([0.9, 0.5, 0.1])
+
+    ranks = {rank_with_ties(scores, 0, policy) for policy in TieHandling}
+
+    assert ranks == {1.0}
+
+
+def test_evaluation_config_defaults_to_average_tie_handling() -> None:
+    """Optimistic ranking inflates MRR when scores are coarse, so is not default."""
+    assert EvaluationConfig().tie_handling is TieHandling.AVERAGE
