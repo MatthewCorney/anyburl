@@ -11,6 +11,7 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 
+from ._chain_scan import ChainScanner
 from ._logging import get_logger
 from .graph import EdgeTypeTuple, HeteroGraph
 from .rule import Atom, Rule, RuleConfig, RuleType, TermKind
@@ -461,6 +462,7 @@ class RuleEvaluator:
         self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
         self._warned_types: set[RuleType] = set()
         self._over_budget = 0
+        self._scanner = ChainScanner(graph)
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
         """Compute quality metrics for a single rule.
@@ -830,7 +832,11 @@ class RuleEvaluator:
             return transposed
 
     def _evaluate_cyclic(self, rule: Rule) -> RuleMetrics:
-        """Evaluate a cyclic rule via sparse chain matmul.
+        """Evaluate a cyclic rule by counting groundings per source row.
+
+        Delegates to :class:`~anyburl._chain_scan.ChainScanner`, which walks
+        the body chain without materialising its product --- the difference
+        between ~1.1 GB and ~0 on BIOKG's densest chain.
 
         Parameters
         ----------
@@ -842,11 +848,11 @@ class RuleEvaluator:
         RuleMetrics
             Computed metrics.
         """
-        chain = self._build_body_chain_matrices(rule)
         head_et = self._find_head_edge_type(rule)
-        head_matrix = self._graph.get_csr_matrix(head_et)
-
-        num_predictions, support = self._scan_chain_blocks(chain, head_matrix)
+        num_predictions, support = self._scanner.scan_all_rows(
+            self._body_signature(rule), head_et
+        )
+        self._check_budget(num_predictions)
 
         if num_predictions == 0:
             return RuleMetrics(
