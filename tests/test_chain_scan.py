@@ -8,7 +8,6 @@ from torch_geometric.data import HeteroData
 from anyburl._chain_scan import ChainScanner
 from anyburl._csr_tables import build_csr_tables
 from anyburl.graph import EdgeTypeTuple, HeteroGraph
-from anyburl.metrics import _csr_intersection_count, _csr_nnz
 
 BORN_IN = ("person", "born_in", "city")
 NEAR = ("city", "near", "city")
@@ -20,20 +19,28 @@ def _reference_counts(
     signature: tuple[EdgeTypeTuple, ...],
     head_edge_type: EdgeTypeTuple,
 ) -> tuple[int, int]:
-    """Oracle: the sparse-matmul path the kernel replaces.
+    """Oracle: chain matmul, then compare coordinate sets.
 
-    Deliberately the production implementation rather than a reimplementation,
-    so agreement means the kernel reproduces shipped behaviour exactly.
+    Written independently of the production helpers so that agreement is
+    evidence about the kernel rather than two copies of one mistake.
     """
     product = graph.get_csr_matrix(signature[0])
     for edge_type in signature[1:]:
         product = product @ graph.get_csr_matrix(edge_type)
 
-    num_predictions = _csr_nnz(product)
-    if num_predictions == 0:
+    predicted = _coordinates(product)
+    if not predicted:
         return 0, 0
-    head = graph.get_csr_matrix(head_edge_type)
-    return num_predictions, _csr_intersection_count(product, head)
+    known = _coordinates(graph.get_csr_matrix(head_edge_type))
+    return len(predicted), len(predicted & known)
+
+
+def _coordinates(matrix: torch.Tensor) -> set[tuple[int, int]]:
+    """Return a CSR tensor's stored (row, column) pairs."""
+    crow = matrix.crow_indices()
+    col = matrix.col_indices()
+    rows = torch.repeat_interleave(torch.arange(crow.numel() - 1), crow[1:] - crow[:-1])
+    return set(zip(rows.tolist(), col.tolist(), strict=True))
 
 
 def _assert_matches_oracle(

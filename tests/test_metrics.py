@@ -11,9 +11,6 @@ from anyburl.metrics import (
     ChainBudgetExceededError,
     RuleEvaluator,
     RuleMetrics,
-    _csr_intersection_count,
-    _dense_mask_intersection_count,
-    _linear_isin_intersection_count,
     aggregate_confidence,
 )
 from anyburl.rule import Atom, Rule, RuleConfig, RuleType, Term
@@ -29,18 +26,6 @@ def _csr(pairs: list[tuple[int, int]], *, shape: tuple[int, int]) -> torch.Tenso
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
         return torch.sparse_coo_tensor(indices, values, size=shape).to_sparse_csr()
-
-
-def test_intersection_paths_agree() -> None:
-    """Dense-mask and isin intersection paths must return the same count."""
-    a = _csr([(0, 0), (0, 2), (1, 1), (2, 2)], shape=(3, 3))
-    b = _csr([(0, 2), (1, 1), (2, 0)], shape=(3, 3))
-
-    dense = _dense_mask_intersection_count(a, b)
-    isin = _linear_isin_intersection_count(a, b)
-
-    assert dense == isin == 2
-    assert _csr_intersection_count(a, b) == 2
 
 
 def _make_ac1_rule_subject_grounded() -> Rule:
