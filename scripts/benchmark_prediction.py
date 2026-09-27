@@ -18,6 +18,7 @@ from torch_geometric.datasets import DBLP
 from anyburl import (
     AnyBURL,
     AnyBURLConfig,
+    PredictionConfig,
     RulePredictor,
     SamplingStrategy,
     ScoringStrategy,
@@ -185,7 +186,7 @@ def main() -> None:
                 test_triples,
                 k_values=K_VALUES,
                 tie_handling=ties,
-                scoring_strategy=scoring,
+                prediction=PredictionConfig(scoring_strategy=scoring),
             )
             hits = metrics.hits_at_k
             print(

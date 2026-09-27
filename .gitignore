@@ -29,3 +29,13 @@ htmlcov/
 
 # Environment variables
 .env
+
+# Datasets: downloaded or generated locally, hundreds of MB, never versioned
+data/
+scripts/data/
+
+# Benchmark result caches
+.benchmarks/
+
+# Local data exports
+biomart_*.tsv

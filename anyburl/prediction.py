@@ -83,6 +83,30 @@ def _evidence_weights(groundings: Tensor, strategy: ScoringStrategy) -> Tensor:
             assert_never(unreachable)
 
 
+MATERIALISED_CHAIN_BYTES_PER_NNZ: int = 24
+"""Resident cost of one stored non-zero: 12 bytes, doubled for the transpose.
+
+A CSR product holds an int64 column index and a float32 value per non-zero,
+and :class:`_MaterialisedChain` keeps the transpose as well.
+"""
+
+MAX_MATERIALISED_CHAIN_NNZ: int = 20_000_000
+"""Largest single chain product worth holding in memory, about 480 MB.
+
+BIOKG's densest chain reaches 93.2M non-zeros, which would cost 2.24 GB
+resident on its own.
+"""
+
+MAX_MATERIALISED_TOTAL_NNZ: int = 40_000_000
+"""Total non-zeros held across all chains, about 960 MB.
+
+A per-chain ceiling alone is not enough: BIOKG has sixteen chains under the
+per-chain limit whose sum is around 68M non-zeros, so the total matters too.
+Chains that do not fit fall back to grounding per query, which is exact and
+costs no resident memory.
+"""
+
+
 class GroundingMode(StrEnum):
     """How a body chain is grounded against the graph.
 
@@ -99,10 +123,15 @@ class GroundingMode(StrEnum):
         them per query. Costs one chain multiply per query but adds no
         resident memory, so it suits evaluating a test set, where only a
         small fraction of rows is ever touched.
+    AUTO : str
+        Materialise a chain when it fits the budgets above and ground the
+        rest per query. The default: it keeps the cheap chains fast without
+        letting a dense one exhaust memory.
     """
 
     MATERIALISED = "materialised"
     ON_DEMAND = "on_demand"
+    AUTO = "auto"
 
 
 class ChainGrounding(Protocol):
@@ -293,6 +322,23 @@ class _AC1ChainGroup:
 
 
 @dataclass(frozen=True, slots=True)
+class PredictionConfig:
+    """How a predictor scores candidates and grounds its chains.
+
+    Parameters
+    ----------
+    scoring_strategy : ScoringStrategy
+        How rule confidences are weighted against a candidate.
+    grounding_mode : GroundingMode
+        Whether body chains are materialised, grounded per query, or chosen
+        between by size.
+    """
+
+    scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED
+    grounding_mode: GroundingMode = GroundingMode.AUTO
+
+
+@dataclass(frozen=True, slots=True)
 class RuleFiring:
     """One body chain's contribution to a single predicted pair.
 
@@ -408,7 +454,7 @@ class RulePredictor:
         results: list[tuple[Rule, RuleMetrics]],
         *,
         scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
-        grounding_mode: GroundingMode = GroundingMode.MATERIALISED,
+        grounding_mode: GroundingMode = GroundingMode.AUTO,
     ) -> None:
         if not results:
             msg = "results must not be empty"
@@ -785,16 +831,26 @@ class RulePredictor:
         unique_chains = _unique_body_chains(graph, results)
 
         groundings: dict[BodyChainKey, ChainGrounding] = {}
+        remaining = MAX_MATERIALISED_TOTAL_NNZ
+        materialised = 0
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
             for chain_key, matrices in unique_chains.items():
-                groundings[chain_key] = _build_grounding(matrices, mode)
+                grounding, consumed = _build_grounding(matrices, mode, remaining)
+                groundings[chain_key] = grounding
+                remaining -= consumed
+                materialised += 1 if consumed else 0
 
         logger.debug(
-            "Built %d %s chain groundings from %d rules",
+            "Built %d %s chain groundings from %d rules (%d materialised, "
+            "%.0f MB resident)",
             len(groundings),
             mode.value,
             len(results),
+            materialised,
+            (MAX_MATERIALISED_TOTAL_NNZ - remaining)
+            * MATERIALISED_CHAIN_BYTES_PER_NNZ
+            / 1e6,
         )
         return groundings
 
@@ -980,7 +1036,8 @@ def _unique_body_chains(
 def _build_grounding(
     matrices: Sequence[Tensor],
     mode: GroundingMode,
-) -> ChainGrounding:
+    remaining_nnz: int,
+) -> tuple[ChainGrounding, int]:
     """Build the grounding for one chain under the chosen mode.
 
     Parameters
@@ -988,26 +1045,78 @@ def _build_grounding(
     matrices : Sequence[Tensor]
         Body atom adjacency matrices, in chain order.
     mode : GroundingMode
-        Whether to materialise the product or ground per query.
+        Whether to materialise the product, ground per query, or decide by
+        how large the product turns out to be.
+    remaining_nnz : int
+        Non-zeros still available in the materialisation budget.
 
     Returns
     -------
-    ChainGrounding
-        The grounding for this chain.
+    tuple[ChainGrounding, int]
+        The grounding, and the non-zeros it consumed from the budget.
     """
     match mode:
         case GroundingMode.ON_DEMAND:
-            return _OnDemandChain(matrices=tuple(matrices))
+            return _OnDemandChain(matrices=tuple(matrices)), 0
         case GroundingMode.MATERIALISED:
-            product = matrices[0]
-            for matrix in matrices[1:]:
-                product = product @ matrix
-            return _MaterialisedChain(
-                product=product,
-                product_transposed=product.t().to_sparse_csr(),
-            )
+            return _materialise(matrices), 0
+        case GroundingMode.AUTO:
+            return _materialise_if_affordable(matrices, remaining_nnz)
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _materialise(matrices: Sequence[Tensor]) -> _MaterialisedChain:
+    """Multiply the chain out and keep the product with its transpose."""
+    product = matrices[0]
+    for matrix in matrices[1:]:
+        product = product @ matrix
+    return _MaterialisedChain(
+        product=product,
+        product_transposed=product.t().to_sparse_csr(),
+    )
+
+
+def _materialise_if_affordable(
+    matrices: Sequence[Tensor],
+    remaining_nnz: int,
+) -> tuple[ChainGrounding, int]:
+    """Materialise a chain only while it stays inside the budgets.
+
+    The product is grown a step at a time and abandoned as soon as it
+    outgrows what is left, so the peak is bounded by one step past the
+    ceiling rather than by the full product.
+
+    Parameters
+    ----------
+    matrices : Sequence[Tensor]
+        Body atom adjacency matrices, in chain order.
+    remaining_nnz : int
+        Non-zeros still available in the budget.
+
+    Returns
+    -------
+    tuple[ChainGrounding, int]
+        Either a materialised chain and its cost, or an on-demand chain and
+        zero.
+    """
+    ceiling = min(MAX_MATERIALISED_CHAIN_NNZ, remaining_nnz)
+    product = matrices[0]
+    for matrix in matrices[1:]:
+        product = product @ matrix
+        if product.col_indices().numel() > ceiling:
+            return _OnDemandChain(matrices=tuple(matrices)), 0
+
+    nnz = int(product.col_indices().numel())
+    if nnz > ceiling:
+        return _OnDemandChain(matrices=tuple(matrices)), 0
+    return (
+        _MaterialisedChain(
+            product=product,
+            product_transposed=product.t().to_sparse_csr(),
+        ),
+        nnz,
+    )
 
 
 def _body_chain_key(rule: Rule) -> BodyChainKey:

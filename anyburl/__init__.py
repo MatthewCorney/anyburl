@@ -80,6 +80,7 @@ from .metrics import (
 from .prediction import (
     GroundingMode,
     Prediction,
+    PredictionConfig,
     RuleFiring,
     RulePredictor,
     ScoringStrategy,
@@ -130,6 +131,7 @@ __all__ = [
     "MetaPathScorer",
     "PopularityScorer",
     "Prediction",
+    "PredictionConfig",
     "RandomScorer",
     "Rule",
     "RuleConfig",

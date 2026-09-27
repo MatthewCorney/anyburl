@@ -24,7 +24,13 @@ from .evaluation import (
 )
 from .graph import HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics
-from .prediction import Prediction, RulePredictor, ScoringStrategy
+from .prediction import (
+    GroundingMode,
+    Prediction,
+    PredictionConfig,
+    RulePredictor,
+    ScoringStrategy,
+)
 from .rule import PathStep, Rule, RuleConfig, RuleGeneralizer, RuleThresholds, RuleType
 from .sampler import (
     BaseTripleSampler,
@@ -349,6 +355,7 @@ class AnyBURL:
         *,
         filter_known: bool = False,
         scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
+        grounding_mode: GroundingMode = GroundingMode.AUTO,
     ) -> list[Prediction]:
         """Generate predictions by grounding learned rules against the graph.
 
@@ -363,6 +370,9 @@ class AnyBURL:
             already present in the graph.
         scoring_strategy : ScoringStrategy
             How rule confidences are weighted against a candidate.
+        grounding_mode : GroundingMode
+            Whether body chains are materialised, grounded per query, or
+            chosen between by size.
 
         Returns
         -------
@@ -381,7 +391,10 @@ class AnyBURL:
             )
             raise RuntimeError(msg)
         predictor = RulePredictor(
-            graph, self.results, scoring_strategy=scoring_strategy
+            graph,
+            self.results,
+            scoring_strategy=scoring_strategy,
+            grounding_mode=grounding_mode,
         )
         return predictor.predict(filter_known=filter_known)
 
@@ -392,7 +405,7 @@ class AnyBURL:
         k_values: tuple[int, ...] = (1, 3, 10),
         filter_known: bool = True,
         tie_handling: TieHandling = TieHandling.AVERAGE,
-        scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
+        prediction: PredictionConfig | None = None,
     ) -> LinkPredictionMetrics:
         """Evaluate link prediction quality on test triples.
 
@@ -409,8 +422,8 @@ class AnyBURL:
             If ``True``, filter known triples when computing ranks.
         tie_handling : TieHandling
             How to rank a target tied with other candidates.
-        scoring_strategy : ScoringStrategy
-            How rule confidences are weighted against a candidate.
+        prediction : PredictionConfig | None
+            Scoring and grounding settings. ``None`` uses the defaults.
 
         Returns
         -------
@@ -429,8 +442,13 @@ class AnyBURL:
             )
             raise RuntimeError(msg)
 
+        if prediction is None:
+            prediction = PredictionConfig()
         predictor = RulePredictor(
-            graph, self.results, scoring_strategy=scoring_strategy
+            graph,
+            self.results,
+            scoring_strategy=prediction.scoring_strategy,
+            grounding_mode=prediction.grounding_mode,
         )
         config = EvaluationConfig(
             k_values=k_values,
