@@ -90,20 +90,32 @@ A CSR product holds an int64 column index and a float32 value per non-zero,
 and :class:`_MaterialisedChain` keeps the transpose as well.
 """
 
-MAX_MATERIALISED_CHAIN_NNZ: int = 20_000_000
-"""Largest single chain product worth holding in memory, about 480 MB.
+MAX_MATERIALISED_CHAIN_NNZ: int = 5_000_000
+"""Largest single chain product worth holding in memory, about 120 MB.
 
 BIOKG's densest chain reaches 93.2M non-zeros, which would cost 2.24 GB
 resident on its own.
 """
 
-MAX_MATERIALISED_TOTAL_NNZ: int = 40_000_000
-"""Total non-zeros held across all chains, about 960 MB.
+MAX_MATERIALISED_TOTAL_NNZ: int = 10_000_000
+"""Total non-zeros held across all chains, about 240 MB.
 
-A per-chain ceiling alone is not enough: BIOKG has sixteen chains under the
-per-chain limit whose sum is around 68M non-zeros, so the total matters too.
-Chains that do not fit fall back to grounding per query, which is exact and
-costs no resident memory.
+A per-chain ceiling alone is not enough: BIOKG has sixteen chains
+individually under the per-chain limit whose sum is around 68M non-zeros.
+Chains that do not fit ground per query instead, which is exact and costs no
+resident memory, only time.
+
+These values are measured rather than derived. Building a BIOKG predictor and
+running 40 queries against it:
+
+    per-chain / total   peak RSS   materialised   time
+       20M / 40M         2.49 GB       19/30      56.3s
+        5M / 10M         1.03 GB       15/30      57.2s
+        2M /  4M         0.68 GB       13/30      79.2s
+          none           0.50 GB        0/30     113.6s
+
+5M/10M costs a third of the memory of 20M/40M at the same speed, while
+refusing to materialise anything leaves queries twice as slow.
 """
 
 
@@ -829,6 +841,7 @@ class RulePredictor:
             Mapping from chain key to its grounding.
         """
         unique_chains = _unique_body_chains(graph, results)
+        known_sizes = _known_chain_sizes(results)
 
         groundings: dict[BodyChainKey, ChainGrounding] = {}
         remaining = MAX_MATERIALISED_TOTAL_NNZ
@@ -836,7 +849,9 @@ class RulePredictor:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
             for chain_key, matrices in unique_chains.items():
-                grounding, consumed = _build_grounding(matrices, mode, remaining)
+                grounding, consumed = _build_grounding(
+                    matrices, mode, known_sizes.get(chain_key), remaining
+                )
                 groundings[chain_key] = grounding
                 remaining -= consumed
                 materialised += 1 if consumed else 0
@@ -1036,6 +1051,7 @@ def _unique_body_chains(
 def _build_grounding(
     matrices: Sequence[Tensor],
     mode: GroundingMode,
+    known_nnz: int | None,
     remaining_nnz: int,
 ) -> tuple[ChainGrounding, int]:
     """Build the grounding for one chain under the chosen mode.
@@ -1046,7 +1062,9 @@ def _build_grounding(
         Body atom adjacency matrices, in chain order.
     mode : GroundingMode
         Whether to materialise the product, ground per query, or decide by
-        how large the product turns out to be.
+        how large the product is.
+    known_nnz : int | None
+        Exact non-zero count of the product where known.
     remaining_nnz : int
         Non-zeros still available in the materialisation budget.
 
@@ -1061,7 +1079,7 @@ def _build_grounding(
         case GroundingMode.MATERIALISED:
             return _materialise(matrices), 0
         case GroundingMode.AUTO:
-            return _materialise_if_affordable(matrices, remaining_nnz)
+            return _materialise_if_affordable(matrices, known_nnz, remaining_nnz)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -1079,18 +1097,24 @@ def _materialise(matrices: Sequence[Tensor]) -> _MaterialisedChain:
 
 def _materialise_if_affordable(
     matrices: Sequence[Tensor],
+    known_nnz: int | None,
     remaining_nnz: int,
 ) -> tuple[ChainGrounding, int]:
-    """Materialise a chain only while it stays inside the budgets.
+    """Materialise a chain only when its size is known and affordable.
 
-    The product is grown a step at a time and abandoned as soon as it
-    outgrows what is left, so the peak is bounded by one step past the
-    ceiling rather than by the full product.
+    The size must be known *before* multiplying. Growing the product and
+    checking afterwards bounds nothing: on BIOKG the first step of
+    ``interacts_with -> interacts_with`` already explodes, so the check fires
+    only once the memory is spent. Measured, that mistake cost 2.29 GB even
+    with the budget set low enough to refuse every chain.
 
     Parameters
     ----------
     matrices : Sequence[Tensor]
         Body atom adjacency matrices, in chain order.
+    known_nnz : int | None
+        Exact non-zero count of the product, or ``None`` when unknown. An
+        unknown chain is grounded per query rather than risked.
     remaining_nnz : int
         Non-zeros still available in the budget.
 
@@ -1101,22 +1125,36 @@ def _materialise_if_affordable(
         zero.
     """
     ceiling = min(MAX_MATERIALISED_CHAIN_NNZ, remaining_nnz)
-    product = matrices[0]
-    for matrix in matrices[1:]:
-        product = product @ matrix
-        if product.col_indices().numel() > ceiling:
-            return _OnDemandChain(matrices=tuple(matrices)), 0
-
-    nnz = int(product.col_indices().numel())
-    if nnz > ceiling:
+    if known_nnz is None or known_nnz > ceiling:
         return _OnDemandChain(matrices=tuple(matrices)), 0
-    return (
-        _MaterialisedChain(
-            product=product,
-            product_transposed=product.t().to_sparse_csr(),
-        ),
-        nnz,
-    )
+    return _materialise(matrices), known_nnz
+
+
+def _known_chain_sizes(
+    results: list[tuple[Rule, RuleMetrics]],
+) -> dict[BodyChainKey, int]:
+    """Read each chain's exact product size off the rules already evaluated.
+
+    A cyclic rule's ``num_predictions`` *is* its chain product's non-zero
+    count, so the evaluator has already paid for this number and it can be
+    reused without touching a matrix. Chains known only through AC1 rules,
+    whose counts are per grounded entity, are absent and so ground per query.
+
+    Parameters
+    ----------
+    results : list[tuple[Rule, RuleMetrics]]
+        Rules with their metrics.
+
+    Returns
+    -------
+    dict[BodyChainKey, int]
+        Product non-zeros per chain, where known.
+    """
+    return {
+        _body_chain_key(rule): metrics.num_predictions
+        for rule, metrics in results
+        if rule.rule_type is RuleType.CYCLIC
+    }
 
 
 def _body_chain_key(rule: Rule) -> BodyChainKey:
