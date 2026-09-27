@@ -74,18 +74,11 @@ class ChainScanner:
             Distinct heads reached per tail, and how many of those the head
             relation already connects.
         """
-        if self._reverse_tables is None:
-            self._reverse_tables = build_csr_tables(
-                self._graph, direction=CsrDirection.REVERSE
-            )
-        reversed_signature = tuple(
-            _swap(edge_type) for edge_type in reversed(tuple(signature))
-        )
         return self._scan(
-            reversed_signature,
+            self._reversed(signature),
             _swap(head_edge_type),
             rows,
-            self._reverse_tables,
+            self._reverse(),
         )
 
     def scan_all_rows(
@@ -137,24 +130,91 @@ class ChainScanner:
         """
         return self._scan(signature, head_edge_type, rows, self._tables)
 
+    def reachable_sources(
+        self, signature: Sequence[EdgeTypeTuple]
+    ) -> NDArray[np.bool_]:
+        """Return which source entities the chain connects to anything.
+
+        The row-wise counterpart of asking a materialised product which rows
+        hold a non-zero, which is all an AC2 rule needs: its disconnected
+        head variable ranges over every entity of its type, so only the
+        connected side has to be grounded.
+
+        Parameters
+        ----------
+        signature : Sequence[EdgeTypeTuple]
+            Body edge types in chain order.
+
+        Returns
+        -------
+        NDArray[np.bool_]
+            One flag per entity of the chain's starting node type.
+        """
+        rows = np.arange(self._graph.node_count(signature[0][0]), dtype=np.int64)
+        predictions, _ = self._scan(signature, None, rows, self._tables)
+        return predictions > 0
+
+    def reachable_targets(
+        self, signature: Sequence[EdgeTypeTuple]
+    ) -> NDArray[np.bool_]:
+        """Return which target entities the chain connects from anything.
+
+        The column-wise counterpart, answered by walking the chain backwards
+        from each candidate rather than by transposing a product.
+
+        Parameters
+        ----------
+        signature : Sequence[EdgeTypeTuple]
+            Body edge types in forward chain order.
+
+        Returns
+        -------
+        NDArray[np.bool_]
+            One flag per entity of the chain's ending node type.
+        """
+        rows = np.arange(self._graph.node_count(signature[-1][2]), dtype=np.int64)
+        predictions, _ = self._scan(
+            self._reversed(signature), None, rows, self._reverse()
+        )
+        return predictions > 0
+
+    def _reverse(self) -> CsrTables:
+        """Return the reverse tables, building them on first use."""
+        if self._reverse_tables is None:
+            self._reverse_tables = build_csr_tables(
+                self._graph, direction=CsrDirection.REVERSE
+            )
+        return self._reverse_tables
+
+    @staticmethod
+    def _reversed(
+        signature: Sequence[EdgeTypeTuple],
+    ) -> tuple[EdgeTypeTuple, ...]:
+        """Return the chain walked backwards, each edge type swapped."""
+        return tuple(_swap(edge_type) for edge_type in reversed(tuple(signature)))
+
     def _scan(
         self,
         signature: Sequence[EdgeTypeTuple],
-        head_edge_type: EdgeTypeTuple,
+        head_edge_type: EdgeTypeTuple | None,
         rows: NDArray[np.int64],
         tables: CsrTables,
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
-        """Run the kernel over one direction's tables."""
+        """Run the kernel over one direction's tables.
+
+        ``head_edge_type`` may be ``None`` when only reachability is wanted,
+        in which case the support counts come back zero.
+        """
         self._validate(signature, head_edge_type)
         edge_ids = tables.edge_ids(signature)
-        head_crow, head_col = self._head_arrays(head_edge_type, tables)
+        head_crow, head_col = self._head_arrays(head_edge_type, signature, tables)
 
         predictions = np.zeros(rows.shape[0], dtype=np.int64)
         support = np.zeros(rows.shape[0], dtype=np.int64)
         if rows.shape[0] == 0:
             return predictions, support
 
-        width = self._scratch_width(edge_ids, head_edge_type, tables)
+        width = self._scratch_width(edge_ids, signature[0][0], tables)
         scan_chain_rows(
             tables.crow_all,
             tables.col_all,
@@ -166,7 +226,9 @@ class ChainScanner:
             np.ascontiguousarray(rows, dtype=np.int64),
             self._stamp_base,
             np.zeros(width, dtype=np.int64),
-            np.zeros(self._graph.node_count(head_edge_type[2]), dtype=np.int64),
+            np.zeros(
+                self._head_marker_width(head_edge_type, signature), dtype=np.int64
+            ),
             np.zeros((FRONTIER_SLOTS, width), dtype=np.int64),
             predictions,
             support,
@@ -177,22 +239,45 @@ class ChainScanner:
     def _scratch_width(
         self,
         edge_ids: NDArray[np.int64],
-        head_edge_type: EdgeTypeTuple,
+        source_type: str,
         tables: CsrTables,
     ) -> int:
         """Return the widest node count any frontier or marker must hold."""
         widths = [int(tables.num_dst_nodes[edge]) for edge in edge_ids]
-        widths.append(self._graph.node_count(head_edge_type[0]))
+        widths.append(self._graph.node_count(source_type))
         return max(widths)
 
+    def _head_marker_width(
+        self,
+        head_edge_type: EdgeTypeTuple | None,
+        signature: Sequence[EdgeTypeTuple],
+    ) -> int:
+        """Return the size of the head-marker scratch for this scan."""
+        if head_edge_type is None:
+            return self._graph.node_count(signature[-1][2])
+        return self._graph.node_count(head_edge_type[2])
+
     def _head_arrays(
-        self, head_edge_type: EdgeTypeTuple, tables: CsrTables
+        self,
+        head_edge_type: EdgeTypeTuple | None,
+        signature: Sequence[EdgeTypeTuple],
+        tables: CsrTables,
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Return the head relation's CSR arrays, padded when it has no edges.
 
         A head type present in the graph but carrying no edges has no CSR
-        index, yet the kernel still needs a row-offset array to read.
+        index, yet the kernel still needs a row-offset array to read, and it
+        must be long enough to index by any scanned row --- Numba does no
+        bounds checking, so a short array segfaults rather than raising.
         """
+        if head_edge_type is None:
+            # The kernel still indexes this by source row, so it must span
+            # every row scanned even when no head relation is involved.
+            source_rows = self._graph.node_count(signature[0][0])
+            return (
+                np.zeros(source_rows + 1, dtype=np.int64),
+                np.zeros(0, dtype=np.int64),
+            )
         num_rows = self._graph.node_count(head_edge_type[0])
         if head_edge_type not in tables.edge_type_to_id:
             return (
@@ -211,7 +296,7 @@ class ChainScanner:
     @staticmethod
     def _validate(
         signature: Sequence[EdgeTypeTuple],
-        head_edge_type: EdgeTypeTuple,
+        head_edge_type: EdgeTypeTuple | None,
     ) -> None:
         """Reject chains that cannot be walked or compared against the head.
 
@@ -231,6 +316,8 @@ class ChainScanner:
                     f"{earlier[2]!r} but {later!r} starts at {later[0]!r}"
                 )
 
+        if head_edge_type is None:
+            return
         if signature[0][0] != head_edge_type[0]:
             raise ValueError(
                 f"chain starts at {signature[0][0]!r} but head "

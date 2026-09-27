@@ -287,3 +287,78 @@ def test_rejects_a_chain_whose_end_differs_from_the_head(
 ) -> None:
     with pytest.raises(ValueError, match="chain ends at"):
         ChainScanner(repeated_type_graph).scan_all_rows((SELF,), HEAD_AB)
+
+
+def _reference_reachable(
+    graph: HeteroGraph, signature: tuple[EdgeTypeTuple, ...]
+) -> tuple[set[int], set[int]]:
+    """Oracle: rows and columns of the matmul product holding a non-zero."""
+    product = graph.get_csr_matrix(signature[0])
+    for edge_type in signature[1:]:
+        product = product @ graph.get_csr_matrix(edge_type)
+    pairs = _coordinates(product)
+    return {row for row, _ in pairs}, {col for _, col in pairs}
+
+
+def test_reachable_sources_matches_product_rows(
+    evaluator_graph: HeteroGraph,
+) -> None:
+    """What AC2 needs on the subject side, without the product."""
+    rows, _ = _reference_reachable(evaluator_graph, (BORN_IN, NEAR))
+
+    mask = ChainScanner(evaluator_graph).reachable_sources((BORN_IN, NEAR))
+
+    assert {int(i) for i in np.nonzero(mask)[0]} == rows
+
+
+def test_reachable_targets_matches_product_columns(
+    evaluator_graph: HeteroGraph,
+) -> None:
+    """And on the object side, without transposing anything."""
+    _, cols = _reference_reachable(evaluator_graph, (BORN_IN, NEAR))
+
+    mask = ChainScanner(evaluator_graph).reachable_targets((BORN_IN, NEAR))
+
+    assert {int(i) for i in np.nonzero(mask)[0]} == cols
+
+
+def test_reachability_matches_on_a_repeated_type_chain(
+    repeated_type_graph: HeteroGraph,
+) -> None:
+    rows, cols = _reference_reachable(repeated_type_graph, (SELF, SELF, CROSS))
+    scanner = ChainScanner(repeated_type_graph)
+
+    sources = scanner.reachable_sources((SELF, SELF, CROSS))
+    targets = scanner.reachable_targets((SELF, SELF, CROSS))
+
+    assert {int(i) for i in np.nonzero(sources)[0]} == rows
+    assert {int(i) for i in np.nonzero(targets)[0]} == cols
+
+
+def test_reachability_spans_every_source_row() -> None:
+    """A head-free scan still indexes its scratch by row; Numba will not catch
+    a short array, it segfaults."""
+    data = HeteroData()
+    data["a"].num_nodes = 500
+    data["b"].num_nodes = 7
+    data[CROSS].edge_index = torch.tensor([[0, 250, 499], [0, 1, 2]])
+    graph = HeteroGraph(data)
+
+    mask = ChainScanner(graph).reachable_sources((CROSS,))
+
+    assert mask.shape == (500,)
+    assert {int(i) for i in np.nonzero(mask)[0]} == {0, 250, 499}
+
+
+def test_reachability_of_a_chain_reaching_nothing() -> None:
+    data = HeteroData()
+    data["a"].num_nodes = 4
+    data["b"].num_nodes = 3
+    data["c"].num_nodes = 3
+    data[CROSS].edge_index = torch.tensor([[0], [0]])
+    data[("b", "onward", "c")].edge_index = torch.tensor([[2], [1]])
+    graph = HeteroGraph(data)
+
+    mask = ChainScanner(graph).reachable_sources((CROSS, ("b", "onward", "c")))
+
+    assert not mask.any()

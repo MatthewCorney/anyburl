@@ -1,14 +1,11 @@
 """Rule quality evaluation: support, confidence, and head coverage."""
 
-import warnings
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import assert_never
 
 import numpy as np
-import torch
-from torch import Tensor
 from tqdm import tqdm
 
 from ._chain_scan import ChainScanner
@@ -110,27 +107,6 @@ def aggregate_confidence(confidences: Sequence[float]) -> float:
     for c in confidences:
         result *= 1.0 - c
     return 1.0 - result
-
-
-def _csr_nnz(matrix: Tensor) -> int:
-    """Return the stored non-zero count of a CSR tensor."""
-    return matrix.col_indices().numel()
-
-
-def _csr_any_row(matrix: Tensor) -> Tensor:
-    """Bool mask: True for rows that contain at least one non-zero entry."""
-    crow = matrix.crow_indices()
-    return (crow[1:] - crow[:-1]) > 0
-
-
-def _csr_any_col(matrix: Tensor) -> Tensor:
-    """Bool mask: True for columns that appear in at least one row."""
-    num_cols = matrix.shape[1]
-    col_idx = matrix.col_indices()
-    mask = torch.zeros(num_cols, dtype=torch.bool)
-    if col_idx.numel() > 0:
-        mask.scatter_(0, col_idx.to(torch.long), True)
-    return mask
 
 
 def _ac1_metrics(
@@ -522,20 +498,19 @@ class RuleEvaluator:
         )
 
     def _evaluate_ac1(self, rule: Rule) -> RuleMetrics:
-        """Evaluate an AC1 rule with one grounded head entity.
+        """Evaluate a single AC1 rule with one grounded head entity.
 
-        Builds a one-hot vector for the constant entity and multiplies
-        through the body chain to find predictions.
+        **Evaluation semantics**: for a subject-grounded rule
+        ``h(person:0, Y) :- b1(X, Z0), ...``, X is a free variable in the
+        stored body, but the evaluator pins X to ``person:0`` by grounding
+        the chain from that entity. For an object-grounded rule
+        ``h(X, city:0) :- ..., bk(Z, Y)``, Y is pinned to ``city:0`` and the
+        chain is walked backwards. This matches the original AnyBURL
+        semantics, where the constant appears in both the head and the
+        anchoring body position.
 
-        **Evaluation semantics**: For a subject-grounded rule
-        ``h(person:0, Y) :- b1(X, Z0), ...``, X is a free variable in
-        the stored body, but the evaluator pins X to ``person:0`` by
-        starting the forward chain from that entity's one-hot vector.
-        For an object-grounded rule ``h(X, city:0) :- ..., bk(Z, Y)``,
-        Y is pinned to ``city:0`` via backward chain propagation.
-
-        This matches the original AnyBURL semantics where the constant
-        appears in both head and the anchoring body position.
+        Takes the same path as :meth:`_evaluate_ac1_group`, so single-rule
+        and batch evaluation cannot drift apart.
 
         Parameters
         ----------
@@ -547,17 +522,8 @@ class RuleEvaluator:
         RuleMetrics
             Computed metrics.
         """
-        head = rule.head
-        chain = self._build_body_chain_matrices(rule)
-
-        is_subject_grounded = head.subject.kind is TermKind.CONSTANT
-        if is_subject_grounded:
-            entity_id = head.subject.entity_id
-            num_nodes = self._graph.node_count(head.subject.node_type)
-        else:
-            entity_id = head.object_.entity_id
-            num_nodes = self._graph.node_count(head.object_.node_type)
-
+        is_subject_grounded = rule.head.subject.kind is TermKind.CONSTANT
+        entity_id = self._ac1_entity_id(rule, is_subject_grounded=is_subject_grounded)
         if entity_id is None:
             return RuleMetrics(
                 support=0,
@@ -566,59 +532,20 @@ class RuleEvaluator:
                 num_predictions=0,
             )
 
-        one_hot = torch.zeros(num_nodes, dtype=torch.float32)
-        one_hot[entity_id] = 1.0
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-            if is_subject_grounded:
-                predictions = one_hot.unsqueeze(0)
-                for matrix in chain:
-                    predictions = predictions @ matrix
-                predictions = predictions.squeeze(0)
-            else:
-                predictions = one_hot.unsqueeze(1)
-                for matrix in reversed(chain):
-                    predictions = matrix @ predictions
-                predictions = predictions.squeeze(1)
-
-        predicted_mask = predictions > 0
-        num_predictions = int(predicted_mask.sum().item())
-
-        if num_predictions == 0:
-            return RuleMetrics(
-                support=0,
-                confidence=ZERO_CONFIDENCE,
-                head_coverage=ZERO_HEAD_COVERAGE,
-                num_predictions=0,
+        head_et = self._find_head_edge_type(rule)
+        signature = self._body_signature(rule)
+        rows = np.array([entity_id], dtype=np.int64)
+        if is_subject_grounded:
+            predictions, support = self._scanner.scan_rows(signature, head_et, rows)
+        else:
+            predictions, support = self._scanner.scan_reversed_rows(
+                signature, head_et, rows
             )
 
-        head_et = self._find_head_edge_type(rule)
-        head_ei = self._graph.edge_index(head_et)
-
-        if is_subject_grounded:
-            known_mask = head_ei[0] == entity_id
-            known_targets = head_ei[1, known_mask]
-        else:
-            known_mask = head_ei[1] == entity_id
-            known_targets = head_ei[0, known_mask]
-
-        predicted_indices = torch.where(predicted_mask)[0]
-        support = int(torch.isin(predicted_indices, known_targets).sum().item())
-
-        confidence = support / num_predictions
-        total_head_triples = self._graph.edge_count(head_et)
-        head_coverage = (
-            support / total_head_triples
-            if total_head_triples > 0
-            else ZERO_HEAD_COVERAGE
-        )
-
-        return RuleMetrics(
-            support=support,
-            confidence=confidence,
-            head_coverage=head_coverage,
-            num_predictions=num_predictions,
+        return _ac1_metrics(
+            int(predictions[0]),
+            int(support[0]),
+            self._graph.edge_count(head_et),
         )
 
     def _evaluate_ac2(self, rule: Rule) -> RuleMetrics:
@@ -628,6 +555,10 @@ class RuleEvaluator:
         variable. The *disconnected* variable is unconstrained, so
         predictions are the Cartesian product of connected bindings
         with all entities of the disconnected variable's type.
+
+        Only a boolean mask over the connected side is needed, so the chain
+        is walked rather than multiplied out --- this was the evaluator's
+        last unbounded product.
 
         Parameters
         ----------
@@ -670,17 +601,15 @@ class RuleEvaluator:
                 num_predictions=0,
             )
 
-        chain = self._build_body_chain_matrices(rule)
-        prediction_matrix = self._chain_multiply(chain)
-
+        signature = self._body_signature(rule)
         if is_subject_connected:
-            connected_mask = _csr_any_row(prediction_matrix)
+            connected_mask = self._scanner.reachable_sources(signature)
             disconnected_type = head.object_.node_type
         else:
-            connected_mask = _csr_any_col(prediction_matrix)
+            connected_mask = self._scanner.reachable_targets(signature)
             disconnected_type = head.subject.node_type
 
-        connected_count = int(connected_mask.sum().item())
+        connected_count = int(connected_mask.sum())
         if connected_count == 0:
             return RuleMetrics(
                 support=0,
@@ -695,8 +624,8 @@ class RuleEvaluator:
         head_et = self._find_head_edge_type(rule)
         head_ei = self._graph.edge_index(head_et)
 
-        known_connected_entities = head_ei[0] if is_subject_connected else head_ei[1]
-        support = int(connected_mask[known_connected_entities].sum().item())
+        known_connected = (head_ei[0] if is_subject_connected else head_ei[1]).numpy()
+        support = int(connected_mask[known_connected].sum())
 
         confidence = support / num_predictions
         total_head_triples = self._graph.edge_count(head_et)
@@ -742,30 +671,6 @@ class RuleEvaluator:
 
         raise ValueError(f"No edge type matches rule head: {target!r}")
 
-    def _build_body_chain_matrices(self, rule: Rule) -> list[Tensor]:
-        """Build CSR matrices for each body atom in chain order.
-
-        Parameters
-        ----------
-        rule : Rule
-            The rule whose body to convert to matrices.
-
-        Returns
-        -------
-        list[Tensor]
-            Sparse CSR float tensors, one per body atom.
-
-        Raises
-        ------
-        ValueError
-            If a body atom's relation doesn't match any edge type.
-        """
-        matrices: list[Tensor] = []
-        for atom in rule.body:
-            et = self._resolve_body_atom_edge_type(atom)
-            matrices.append(self._graph.get_csr_matrix(et))
-        return matrices
-
     def _resolve_body_atom_edge_type(self, atom: Atom) -> EdgeTypeTuple:
         """Resolve a body atom to a graph edge type.
 
@@ -793,24 +698,3 @@ class RuleEvaluator:
             return target
 
         raise ValueError(f"No edge type matches body atom: {target!r}")
-
-    @staticmethod
-    def _chain_multiply(matrices: list[Tensor]) -> Tensor:
-        """Multiply a chain of sparse matrices left to right.
-
-        Parameters
-        ----------
-        matrices : list[Tensor]
-            Sparse CSR float tensors to multiply.
-
-        Returns
-        -------
-        Tensor
-            The product matrix.
-        """
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-            result = matrices[0]
-            for matrix in matrices[1:]:
-                result = result @ matrix
-        return result
