@@ -343,17 +343,6 @@ class RuleConfig:
         Default minimum head coverage threshold in [0.0, 1.0].
     per_type : Mapping[RuleType, RuleThresholds]
         Floors that replace the defaults for the named rule types.
-    max_chain_predictions : int | None
-        Abandon a body chain once it is known to predict more than this
-        many pairs. ``None`` (the default) never abandons one.
-
-        This is a *resource* limit, not a quality judgement: a chain over
-        budget is reported as unevaluated rather than as a failing rule.
-        In practice the two coincide --- on BIOKG the chains that exhaust
-        memory are the ones that predict almost everything and rank
-        nothing, such as ``interacts_with -> interacts_with ->
-        is_annotated_to`` at 93.2M predictions and confidence 0.0020,
-        against a best rule making 501k predictions at confidence 0.2975.
 
     Raises
     ------
@@ -365,16 +354,10 @@ class RuleConfig:
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
     min_head_coverage: float = DEFAULT_MIN_HEAD_COVERAGE
     per_type: Mapping[RuleType, RuleThresholds] = field(default_factory=dict)
-    max_chain_predictions: int | None = None
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
         self.default_thresholds()
-        if self.max_chain_predictions is not None and self.max_chain_predictions < 1:
-            raise ValueError(
-                "max_chain_predictions must be positive, got "
-                f"{self.max_chain_predictions}"
-            )
 
     def default_thresholds(self) -> RuleThresholds:
         """Return the floors applied to rule types without an override."""

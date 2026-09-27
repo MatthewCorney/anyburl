@@ -72,7 +72,6 @@ from .evaluation import (
 )
 from .graph import HeteroGraph
 from .metrics import (
-    ChainBudgetExceededError,
     RuleEvaluator,
     RuleMetrics,
     aggregate_confidence,
@@ -118,7 +117,6 @@ __all__ = [
     "AnytimeLearner",
     "AnytimeReport",
     "Atom",
-    "ChainBudgetExceededError",
     "EntityBalancedTripleSampler",
     "EntityScorer",
     "EvaluationConfig",

@@ -78,10 +78,6 @@ class AnyBURLConfig:
         Minimum confidence threshold for rule filtering.
     min_head_coverage : float
         Minimum head coverage threshold for rule filtering.
-    max_chain_predictions : int | None
-        Abandon a body chain once it is known to predict more than this
-        many pairs, guarding memory on dense graphs. See
-        :class:`~anyburl.rule.RuleConfig`.
     per_type_thresholds : Mapping[RuleType, RuleThresholds]
         Floors replacing the defaults for the named rule types. Head
         coverage in particular is not comparable across types --- see
@@ -102,7 +98,6 @@ class AnyBURLConfig:
     min_support: int = 2
     min_confidence: float = 0.01
     min_head_coverage: float = 0.01
-    max_chain_predictions: int | None = None
     per_type_thresholds: Mapping[RuleType, RuleThresholds] = field(default_factory=dict)
 
     seed: int = 42
@@ -347,7 +342,6 @@ class AnyBURL:
             min_confidence=cfg.min_confidence,
             min_head_coverage=cfg.min_head_coverage,
             per_type=cfg.per_type_thresholds,
-            max_chain_predictions=cfg.max_chain_predictions,
         )
 
     def predict(
@@ -519,7 +513,6 @@ class AnyBURL:
             min_confidence=cfg.min_confidence,
             min_head_coverage=cfg.min_head_coverage,
             per_type=cfg.per_type_thresholds,
-            max_chain_predictions=cfg.max_chain_predictions,
         )
 
         generalizer = RuleGeneralizer(rule_config)
@@ -556,7 +549,6 @@ class AnyBURL:
                 min_confidence=cfg.min_confidence,
                 min_head_coverage=cfg.min_head_coverage,
                 per_type=cfg.per_type_thresholds,
-                max_chain_predictions=cfg.max_chain_predictions,
             ),
         )
 

@@ -22,29 +22,6 @@ BodySignature = tuple[EdgeTypeTuple, ...]
 logger = get_logger(__name__)
 
 
-class ChainBudgetExceededError(RuntimeError):
-    """Raised when a body chain predicts more pairs than the budget allows.
-
-    Carries what was known when the scan stopped, so a caller can report
-    why a rule went unevaluated rather than silently dropping it.
-
-    Parameters
-    ----------
-    predictions : int
-        Predictions counted before abandoning the chain.
-    budget : int
-        The configured ceiling.
-    """
-
-    def __init__(self, predictions: int, budget: int) -> None:
-        super().__init__(
-            f"body chain predicts at least {predictions} pairs, over the "
-            f"max_chain_predictions budget of {budget}"
-        )
-        self.predictions = predictions
-        self.budget = budget
-
-
 ZERO_CONFIDENCE: float = 0.0
 ZERO_HEAD_COVERAGE: float = 0.0
 
@@ -216,7 +193,6 @@ class RuleEvaluator:
         self._config = config
         self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
         self._warned_types: set[RuleType] = set()
-        self._over_budget = 0
         self._scanner = ChainScanner(graph)
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
@@ -281,10 +257,9 @@ class RuleEvaluator:
                 if max_results is not None and len(results) >= max_results:
                     break
         logger.debug(
-            "Evaluated %d rules, %d passed thresholds, %d over budget",
+            "Evaluated %d rules, %d passed thresholds",
             len(rules),
             len(results),
-            self._over_budget,
         )
         self._warn_on_eliminated_types(rules, metrics_by_rule)
         return results
@@ -368,17 +343,12 @@ class RuleEvaluator:
             Metrics keyed by rule.
         """
         metrics_by_rule: dict[Rule, RuleMetrics] = {}
-        self._over_budget = 0
-
         ac1_rules = [r for r in rules if r.rule_type is RuleType.AC1]
         other_rules = [r for r in rules if r.rule_type is not RuleType.AC1]
 
         for rule in tqdm(other_rules, desc="Evaluating rules", disable=not other_rules):
             if rule not in metrics_by_rule:
-                try:
-                    metrics_by_rule[rule] = self.evaluate(rule)
-                except ChainBudgetExceededError as exceeded:
-                    self._report_over_budget(rule, exceeded)
+                metrics_by_rule[rule] = self.evaluate(rule)
 
         self._evaluate_ac1_groups(ac1_rules, metrics_by_rule)
         return metrics_by_rule
@@ -405,12 +375,9 @@ class RuleEvaluator:
         for (_, is_subject_grounded), group in tqdm(
             groups.items(), desc="Evaluating AC1 groups", disable=not groups
         ):
-            try:
-                self._evaluate_ac1_group(
-                    group, is_subject_grounded=is_subject_grounded, out=out
-                )
-            except ChainBudgetExceededError as exceeded:
-                self._report_over_budget(group[0], exceeded, group_size=len(group))
+            self._evaluate_ac1_group(
+                group, is_subject_grounded=is_subject_grounded, out=out
+            )
 
     def _evaluate_ac1_group(
         self,
@@ -531,8 +498,6 @@ class RuleEvaluator:
         num_predictions, support = self._scanner.scan_all_rows(
             self._body_signature(rule), head_et
         )
-        self._check_budget(num_predictions)
-
         if num_predictions == 0:
             return RuleMetrics(
                 support=0,
@@ -555,54 +520,6 @@ class RuleEvaluator:
             head_coverage=head_coverage,
             num_predictions=num_predictions,
         )
-
-    def _report_over_budget(
-        self,
-        rule: Rule,
-        exceeded: ChainBudgetExceededError,
-        *,
-        group_size: int = 1,
-    ) -> None:
-        """Log that a chain was abandoned, naming it so the gap is visible.
-
-        Parameters
-        ----------
-        rule : Rule
-            A rule using the abandoned chain.
-        exceeded : ChainBudgetExceededError
-            The raised budget error.
-        group_size : int
-            How many rules shared the abandoned chain.
-        """
-        self._over_budget += group_size
-        chain = " -> ".join(atom.relation for atom in rule.body)
-        logger.warning(
-            "Skipped %d %s rule(s) on chain %s: at least %d predictions, over "
-            "the max_chain_predictions budget of %d. These rules are "
-            "unevaluated, not rejected.",
-            group_size,
-            rule.rule_type.value,
-            chain,
-            exceeded.predictions,
-            exceeded.budget,
-        )
-
-    def _check_budget(self, predictions: int) -> None:
-        """Abandon the chain if it has already outgrown the budget.
-
-        Parameters
-        ----------
-        predictions : int
-            Predictions counted so far.
-
-        Raises
-        ------
-        ChainBudgetExceededError
-            If a budget is configured and ``predictions`` exceeds it.
-        """
-        budget = self._config.max_chain_predictions
-        if budget is not None and predictions > budget:
-            raise ChainBudgetExceededError(predictions, budget)
 
     def _evaluate_ac1(self, rule: Rule) -> RuleMetrics:
         """Evaluate an AC1 rule with one grounded head entity.
