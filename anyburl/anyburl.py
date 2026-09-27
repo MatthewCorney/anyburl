@@ -1,7 +1,7 @@
 """End-to-end AnyBURL pipeline: sample, walk, generalize, evaluate."""
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Self
 
 import torch
@@ -9,13 +9,26 @@ from torch_geometric.data import HeteroData
 from tqdm import tqdm
 
 from ._logging import get_logger
-from .evaluation import EvaluationConfig, LinkPredictionEvaluator, LinkPredictionMetrics
+from .anytime import (
+    AnytimeConfig,
+    AnytimeLearner,
+    AnytimeReport,
+    MiningStages,
+    PathWalker,
+)
+from .evaluation import (
+    EvaluationConfig,
+    LinkPredictionEvaluator,
+    LinkPredictionMetrics,
+    TieHandling,
+)
 from .graph import HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics
-from .prediction import Prediction, RulePredictor
-from .rule import PathStep, Rule, RuleConfig, RuleGeneralizer
+from .prediction import Prediction, RulePredictor, ScoringStrategy
+from .rule import PathStep, Rule, RuleConfig, RuleGeneralizer, RuleThresholds, RuleType
 from .sampler import (
     BaseTripleSampler,
+    EntityBalancedTripleSampler,
     SamplerConfig,
     SamplingStrategy,
     Triple,
@@ -59,6 +72,14 @@ class AnyBURLConfig:
         Minimum confidence threshold for rule filtering.
     min_head_coverage : float
         Minimum head coverage threshold for rule filtering.
+    max_chain_predictions : int | None
+        Abandon a body chain once it is known to predict more than this
+        many pairs, guarding memory on dense graphs. See
+        :class:`~anyburl.rule.RuleConfig`.
+    per_type_thresholds : Mapping[RuleType, RuleThresholds]
+        Floors replacing the defaults for the named rule types. Head
+        coverage in particular is not comparable across types --- see
+        :class:`~anyburl.rule.RuleConfig`.
     seed : int
         Random seed for reproducibility.
     """
@@ -75,6 +96,8 @@ class AnyBURLConfig:
     min_support: int = 2
     min_confidence: float = 0.01
     min_head_coverage: float = 0.01
+    max_chain_predictions: int | None = None
+    per_type_thresholds: Mapping[RuleType, RuleThresholds] = field(default_factory=dict)
 
     seed: int = 42
 
@@ -102,8 +125,11 @@ def build_triple_sampler(
     ValueError
         If the strategy is not supported.
     """
-    if config.strategy == SamplingStrategy.UNIFORM:
+    if config.strategy is SamplingStrategy.UNIFORM:
         return UniformTripleSampler(graph, config)
+
+    if config.strategy is SamplingStrategy.ENTITY_BALANCED:
+        return EntityBalancedTripleSampler(graph, config)
 
     edge_counts = torch.tensor(
         [graph.edge_count(et) for et in graph.edge_types if graph.edge_count(et) > 0],
@@ -128,9 +154,10 @@ def build_walk_engine(
 ) -> WalkEngine | NumbaWalkEngine:
     """Build a walk engine for the configured strategy.
 
-    Uniform walks use the JIT-compiled :class:`NumbaWalkEngine`. The
-    relation-weighted strategy uses the reference :class:`WalkEngine`,
-    which the Numba kernel does not yet cover.
+    Uniform and reachability-pruned walks use the JIT-compiled
+    :class:`NumbaWalkEngine`. The relation-weighted strategy uses the
+    reference :class:`WalkEngine`, which the Numba kernel does not yet
+    cover.
 
     Parameters
     ----------
@@ -149,7 +176,10 @@ def build_walk_engine(
     ValueError
         If the walk strategy is not supported.
     """
-    if config.strategy is WalkStrategy.UNIFORM:
+    if config.strategy in (
+        WalkStrategy.UNIFORM,
+        WalkStrategy.REACHABILITY_PRUNED,
+    ):
         return NumbaWalkEngine(graph, config)
 
     if config.strategy is WalkStrategy.RELATION_WEIGHTED:
@@ -201,6 +231,7 @@ class AnyBURL:
         self.paths: list[tuple[list[PathStep], Triple]] = []
         self.rules: list[Rule] = []
         self.results: list[tuple[Rule, RuleMetrics]] = []
+        self.report: AnytimeReport | None = None
 
     def fit(self, data: HeteroData) -> Self:
         """Run the full AnyBURL learning pipeline.
@@ -227,17 +258,111 @@ class AnyBURL:
 
         return self
 
-    def predict(self, *, filter_known: bool = False) -> list[Prediction]:
+    def fit_anytime(
+        self, data: HeteroData, anytime_config: AnytimeConfig | None = None
+    ) -> Self:
+        """Mine rules by increasing length within a wall-clock budget.
+
+        The alternative to :meth:`fit`, which mines one fixed
+        configuration. Here the loop keeps drawing batches at a length
+        until new rules dry up, then moves to longer bodies, stopping when
+        the budget runs out. ``sample_size`` and ``max_walk_attempts`` from
+        :class:`AnyBURLConfig` size a single batch rather than the run.
+
+        Results are stored on the instance, and :attr:`report` records how
+        the budget was spent --- worth reading, since a run that ends
+        un-saturated means a larger budget would still be finding rules.
+
+        Parameters
+        ----------
+        data : HeteroData
+            A PyTorch Geometric heterogeneous graph.
+        anytime_config : AnytimeConfig | None
+            Budget and stopping rules. Defaults to
+            :class:`AnytimeConfig` with this pipeline's walk lengths and
+            seed.
+
+        Returns
+        -------
+        AnyBURL
+            ``self``, for method chaining.
+        """
+        cfg = self.config
+        if anytime_config is None:
+            anytime_config = AnytimeConfig(
+                batch_size=cfg.sample_size,
+                min_length=cfg.min_walk_length,
+                max_length=cfg.max_walk_length,
+                seed=cfg.seed,
+            )
+
+        self.graph = HeteroGraph(data)
+        learner = AnytimeLearner(self._build_mining_stages(), anytime_config)
+        self.results, self.report = learner.learn()
+        self.rules = [rule for rule, _ in self.results]
+        return self
+
+    def _build_mining_stages(self) -> MiningStages:
+        """Wire the per-batch collaborators the anytime loop drives."""
+        graph = self._require_graph()
+        cfg = self.config
+
+        def sample_batch(batch_index: int) -> Sequence[Triple]:
+            sampler_config = SamplerConfig(
+                sample_size=cfg.sample_size,
+                strategy=cfg.sampling_strategy,
+                seed=cfg.seed + batch_index,
+                target_edge_type=cfg.target_edge_type,
+            )
+            return build_triple_sampler(graph, sampler_config).sample()
+
+        def walker_for_length(length: int) -> PathWalker:
+            walk_config = WalkConfig(
+                max_length=length,
+                min_length=length,
+                max_attempts=cfg.max_walk_attempts,
+                strategy=cfg.walk_strategy,
+                seed=cfg.seed,
+            )
+            return build_walk_engine(graph, walk_config)
+
+        return MiningStages(
+            sample_batch=sample_batch,
+            walker_for_length=walker_for_length,
+            generalizer=RuleGeneralizer(self._rule_config()),
+            evaluator=RuleEvaluator(graph, self._rule_config()),
+        )
+
+    def _rule_config(self) -> RuleConfig:
+        """Build the rule quality configuration from the pipeline config."""
+        cfg = self.config
+        return RuleConfig(
+            min_support=cfg.min_support,
+            min_confidence=cfg.min_confidence,
+            min_head_coverage=cfg.min_head_coverage,
+            per_type=cfg.per_type_thresholds,
+            max_chain_predictions=cfg.max_chain_predictions,
+        )
+
+    def predict(
+        self,
+        *,
+        filter_known: bool = False,
+        scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
+    ) -> list[Prediction]:
         """Generate predictions by grounding learned rules against the graph.
 
         Pre-computes product matrices per unique body chain, then
-        aggregates confidence scores across all rules via noisy-or.
+        aggregates confidence scores across all rules via noisy-or,
+        weighted per ``scoring_strategy``.
 
         Parameters
         ----------
         filter_known : bool
             If ``True``, exclude predictions that correspond to edges
             already present in the graph.
+        scoring_strategy : ScoringStrategy
+            How rule confidences are weighted against a candidate.
 
         Returns
         -------
@@ -255,7 +380,9 @@ class AnyBURL:
                 "No rules found. Call fit(data) first and ensure rules pass thresholds."
             )
             raise RuntimeError(msg)
-        predictor = RulePredictor(graph, self.results)
+        predictor = RulePredictor(
+            graph, self.results, scoring_strategy=scoring_strategy
+        )
         return predictor.predict(filter_known=filter_known)
 
     def evaluate_predictions(
@@ -264,6 +391,8 @@ class AnyBURL:
         *,
         k_values: tuple[int, ...] = (1, 3, 10),
         filter_known: bool = True,
+        tie_handling: TieHandling = TieHandling.AVERAGE,
+        scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
     ) -> LinkPredictionMetrics:
         """Evaluate link prediction quality on test triples.
 
@@ -278,6 +407,10 @@ class AnyBURL:
             Hits@K thresholds.
         filter_known : bool
             If ``True``, filter known triples when computing ranks.
+        tie_handling : TieHandling
+            How to rank a target tied with other candidates.
+        scoring_strategy : ScoringStrategy
+            How rule confidences are weighted against a candidate.
 
         Returns
         -------
@@ -296,10 +429,13 @@ class AnyBURL:
             )
             raise RuntimeError(msg)
 
-        predictor = RulePredictor(graph, self.results)
+        predictor = RulePredictor(
+            graph, self.results, scoring_strategy=scoring_strategy
+        )
         config = EvaluationConfig(
             k_values=k_values,
             filter_known=filter_known,
+            tie_handling=tie_handling,
         )
         evaluator = LinkPredictionEvaluator(predictor, graph, config)
         return evaluator.evaluate(test_triples)
@@ -364,6 +500,8 @@ class AnyBURL:
             min_support=cfg.min_support,
             min_confidence=cfg.min_confidence,
             min_head_coverage=cfg.min_head_coverage,
+            per_type=cfg.per_type_thresholds,
+            max_chain_predictions=cfg.max_chain_predictions,
         )
 
         generalizer = RuleGeneralizer(rule_config)
@@ -399,6 +537,8 @@ class AnyBURL:
                 min_support=cfg.min_support,
                 min_confidence=cfg.min_confidence,
                 min_head_coverage=cfg.min_head_coverage,
+                per_type=cfg.per_type_thresholds,
+                max_chain_predictions=cfg.max_chain_predictions,
             ),
         )
 

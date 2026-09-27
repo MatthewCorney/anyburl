@@ -46,7 +46,7 @@ Module Layout
     :class:`RuleEvaluator` and :class:`RuleMetrics`.
 ``evaluation``
     :class:`LinkPredictionEvaluator`, :class:`EvaluationConfig`,
-    and :class:`LinkPredictionMetrics`.
+    :class:`LinkPredictionMetrics`, and :class:`TieHandling`.
 
 References
 ----------
@@ -56,45 +56,104 @@ References
 """
 
 from .anyburl import AnyBURL, AnyBURLConfig
-from .evaluation import EvaluationConfig, LinkPredictionEvaluator, LinkPredictionMetrics
+from .anytime import (
+    AnytimeConfig,
+    AnytimeLearner,
+    AnytimeReport,
+    LengthReport,
+)
+from .baselines import MetaPathScorer, PopularityScorer, RandomScorer
+from .evaluation import (
+    EntityScorer,
+    EvaluationConfig,
+    LinkPredictionEvaluator,
+    LinkPredictionMetrics,
+    TieHandling,
+)
 from .graph import HeteroGraph
-from .metrics import RuleEvaluator, RuleMetrics, aggregate_confidence
-from .prediction import Prediction, RulePredictor
-from .rule import Atom, Rule, RuleConfig, RuleGeneralizer, RuleType, Term, TermKind
+from .metrics import (
+    ChainBudgetExceededError,
+    RuleEvaluator,
+    RuleMetrics,
+    aggregate_confidence,
+)
+from .prediction import (
+    GroundingMode,
+    Prediction,
+    RuleFiring,
+    RulePredictor,
+    ScoringStrategy,
+)
+from .rule import (
+    Atom,
+    Rule,
+    RuleConfig,
+    RuleGeneralizer,
+    RuleThresholds,
+    RuleType,
+    Term,
+    TermKind,
+)
 from .sampler import (
+    EntityBalancedTripleSampler,
     SamplerConfig,
     SamplingStrategy,
     Triple,
     UniformTripleSampler,
     WeightedTripleSampler,
 )
+from .split import (
+    InverseEdgeHandling,
+    SplitConfig,
+    TripleSplit,
+    split_target_edges,
+)
 from .walk import WalkConfig, WalkEngine, WalkStrategy
 
 __all__ = [
     "AnyBURL",
     "AnyBURLConfig",
+    "AnytimeConfig",
+    "AnytimeLearner",
+    "AnytimeReport",
     "Atom",
+    "ChainBudgetExceededError",
+    "EntityBalancedTripleSampler",
+    "EntityScorer",
     "EvaluationConfig",
+    "GroundingMode",
     "HeteroGraph",
+    "InverseEdgeHandling",
+    "LengthReport",
     "LinkPredictionEvaluator",
     "LinkPredictionMetrics",
+    "MetaPathScorer",
+    "PopularityScorer",
     "Prediction",
+    "RandomScorer",
     "Rule",
     "RuleConfig",
     "RuleEvaluator",
+    "RuleFiring",
     "RuleGeneralizer",
     "RuleMetrics",
     "RulePredictor",
+    "RuleThresholds",
     "RuleType",
     "SamplerConfig",
     "SamplingStrategy",
+    "ScoringStrategy",
+    "SplitConfig",
     "Term",
     "TermKind",
+    "TieHandling",
     "Triple",
+    "TripleSplit",
     "UniformTripleSampler",
     "WalkConfig",
     "WalkEngine",
     "WalkStrategy",
     "WeightedTripleSampler",
     "aggregate_confidence",
+    "split_target_edges",
 ]

@@ -1,7 +1,12 @@
 """Benchmark RulePredictor init / predict / score_tails / score_heads.
 
-Loads the DBLP dataset, runs the AnyBURL pipeline to learn rules,
-then times each prediction operation and prints a summary table.
+Loads the DBLP dataset, holds out a fraction of the target edges, runs the
+AnyBURL pipeline on the remainder, then times each prediction operation and
+prints a summary table.
+
+Rules are learned on the training split so the reported link prediction
+quality is honest. Fitting on the full graph and then ranking its own edges
+measures memorisation instead, and scores far higher.
 """
 
 import random
@@ -10,7 +15,16 @@ import warnings
 
 from torch_geometric.datasets import DBLP
 
-from anyburl import AnyBURL, AnyBURLConfig, RulePredictor, SamplingStrategy
+from anyburl import (
+    AnyBURL,
+    AnyBURLConfig,
+    RulePredictor,
+    SamplingStrategy,
+    ScoringStrategy,
+    SplitConfig,
+    TieHandling,
+    split_target_edges,
+)
 from anyburl.graph import HeteroGraph
 
 warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
@@ -28,6 +42,9 @@ MIN_HEAD_COVERAGE = 0.005
 SEED = 42
 
 NUM_SCORE_QUERIES = 100
+TEST_FRACTION = 0.1
+NUM_TEST_TRIPLES = 300
+K_VALUES = (1, 3, 10)
 
 
 def main() -> None:
@@ -42,6 +59,17 @@ def main() -> None:
     dataset = DBLP(root=DATA_ROOT)
     data = dataset[0]
     print(f"Loaded DBLP: {data}")
+
+    split = split_target_edges(
+        data,
+        SplitConfig(target_edge_type=TARGET_EDGE_TYPE, test_fraction=TEST_FRACTION),
+    )
+    train_data = split.train_data
+    test_triples = split.test_triples[:NUM_TEST_TRIPLES]
+    print(
+        f"Split: {train_data[TARGET_EDGE_TYPE].edge_index.size(1)} train edges, "
+        f"{len(split.test_triples)} held out ({len(test_triples)} evaluated)"
+    )
     print()
 
     config = AnyBURLConfig(
@@ -58,7 +86,7 @@ def main() -> None:
     )
 
     t0 = time.perf_counter()
-    pipeline = AnyBURL(config).fit(data)
+    pipeline = AnyBURL(config).fit(train_data)
     fit_elapsed = time.perf_counter() - t0
     print(f"Pipeline fit: {fit_elapsed:.2f}s")
     print(f"  Rules passing filter: {len(pipeline.results)}")
@@ -68,7 +96,7 @@ def main() -> None:
         print("No rules found, cannot benchmark prediction.")
         return
 
-    graph = HeteroGraph(data)
+    graph = HeteroGraph(train_data)
 
     # ------------------------------------------------------------------
     # 2. Time RulePredictor.__init__
@@ -140,25 +168,50 @@ def main() -> None:
     )
     print()
 
-    # Chain product stats
-    print("Chain product stats:")
-    cyclic_groups = predictor._cyclic_groups
-    ac1_groups = predictor._ac1_groups
-    print(f"  Cyclic groups: {len(cyclic_groups)}")
-    print(f"  AC1 groups:    {len(ac1_groups)}")
-    for i, g in enumerate(cyclic_groups):
-        nnz = g.chain_product.product.col_indices().numel()
-        shape = tuple(g.chain_product.product.shape)
+    # ------------------------------------------------------------------
+    # 7. Link prediction quality on the held-out split
+    # ------------------------------------------------------------------
+    print("=" * 70)
+    print("Link prediction quality (held-out split)")
+    print("=" * 70)
+    print()
+    print(
+        f"  {'scoring':<16} {'ties':<12} {'MRR':>8} {'H@1':>8} {'H@3':>8} {'H@10':>8}"
+    )
+    print(f"  {'-' * 16} {'-' * 12} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}")
+    for scoring in ScoringStrategy:
+        for ties in (TieHandling.OPTIMISTIC, TieHandling.AVERAGE):
+            metrics = pipeline.evaluate_predictions(
+                test_triples,
+                k_values=K_VALUES,
+                tie_handling=ties,
+                scoring_strategy=scoring,
+            )
+            hits = metrics.hits_at_k
+            print(
+                f"  {scoring.value:<16} {ties.value:<12} {metrics.mrr:>8.4f} "
+                f"{hits[1]:>8.4f} {hits[3]:>8.4f} {hits[10]:>8.4f}"
+            )
+    print()
+
+    # Chain grounding stats
+    print("Chain grounding stats:")
+    print(f"  Cyclic groups: {len(predictor._cyclic_groups)}")
+    print(f"  AC1 groups:    {len(predictor._ac1_groups)}")
+    for i, g in enumerate(predictor._cyclic_groups):
+        nnz = g.grounding.product.col_indices().numel()
+        shape = tuple(g.grounding.product.shape)
         print(
-            f"    cyclic[{i}]: shape={shape} nnz={nnz} conf={g.aggregated_confidence:.4f}"
+            f"    cyclic[{i}]: shape={shape} nnz={nnz} "
+            f"conf={g.aggregated_confidence:.4f}"
         )
-    for i, g in enumerate(ac1_groups):
-        nnz = g.chain_product.product.col_indices().numel()
-        shape = tuple(g.chain_product.product.shape)
-        n_subj = len(g.subject_grounded)
-        n_obj = len(g.object_grounded)
+    for i, g in enumerate(predictor._ac1_groups):
+        nnz = g.grounding.product.col_indices().numel()
+        shape = tuple(g.grounding.product.shape)
         print(
-            f"    ac1[{i}]: shape={shape} nnz={nnz} subj_grounded={n_subj} obj_grounded={n_obj}"
+            f"    ac1[{i}]: shape={shape} nnz={nnz} "
+            f"subj_grounded={len(g.subject_grounded)} "
+            f"obj_grounded={len(g.object_grounded)}"
         )
     print()
 
