@@ -7,46 +7,17 @@ Algorithm Pipeline
 ------------------
 The learning process follows four stages:
 
-1. **Sample** --- :func:`build_triple_sampler` draws target triples from
-   the graph according to a :class:`SamplingStrategy` (uniform, relation-
-   proportional, or inverse-frequency weighted).
+1. **Sample** --- draw target triples according to a
+   :class:`SamplingStrategy`.
+2. **Walk** --- run bounded random walks from each triple's head entity,
+   keeping paths that reach its tail.
+3. **Generalize** --- :class:`RuleGeneralizer` replaces the entities in each
+   path with variables, producing cyclic, AC1 and AC2 :class:`Rule` objects.
+4. **Evaluate** --- :class:`RuleEvaluator` computes support, confidence and
+   head coverage (:class:`RuleMetrics`) by counting body-chain groundings.
 
-2. **Walk** --- a walk engine from :func:`build_walk_engine` performs
-   bounded random walks from each sampled triple's head entity, searching
-   for paths that reach the tail entity. Successful paths are returned as
-   sequences of :class:`~anyburl.rule.PathStep`.
-
-3. **Generalize** --- :class:`RuleGeneralizer` replaces concrete
-   entities in each path with variables, producing typed Horn rules.
-   Each path yields up to three :class:`Rule` variants:
-
-   * **Cyclic** -- both head variables appear in the body chain.
-   * **AC1** -- one head variable is grounded as a constant.
-   * **AC2** -- one head variable is absent from the body entirely.
-
-4. **Evaluate** --- :class:`RuleEvaluator` scores each rule via sparse
-   CSR matrix multiplication against the graph, computing support,
-   confidence, and head coverage (:class:`RuleMetrics`).
-
-Module Layout
--------------
-``graph``
-    :class:`HeteroGraph` wraps PyG ``HeteroData`` with precomputed CSR
-    indices for O(1) neighbor lookup and sparse matmul.
-``sampler``
-    :class:`SamplerConfig`, :class:`SamplingStrategy`, and the concrete
-    samplers (:class:`UniformTripleSampler`, :class:`WeightedTripleSampler`).
-``walk``
-    :class:`WalkConfig`, :class:`WalkStrategy`, and the walk engines
-    (:class:`NumbaWalkEngine`, :class:`WalkEngine`).
-``rule``
-    :class:`Rule`, :class:`Atom`, :class:`Term`, :class:`RuleGeneralizer`,
-    and :class:`RuleConfig`.
-``metrics``
-    :class:`RuleEvaluator` and :class:`RuleMetrics`.
-``evaluation``
-    :class:`LinkPredictionEvaluator`, :class:`EvaluationConfig`,
-    :class:`LinkPredictionMetrics`, and :class:`TieHandling`.
+Learned rules are applied by :class:`RulePredictor` and scored with
+:class:`LinkPredictionEvaluator`.
 
 References
 ----------
@@ -69,6 +40,13 @@ from .evaluation import (
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
     TieHandling,
+)
+from .exceptions import (
+    AnyBURLError,
+    ConfigurationError,
+    GraphSchemaError,
+    InvalidRuleError,
+    NotFittedError,
 )
 from .graph import HeteroGraph
 from .metrics import (
@@ -113,20 +91,25 @@ from .walk import WalkConfig, WalkEngine, WalkStrategy
 __all__ = [
     "AnyBURL",
     "AnyBURLConfig",
+    "AnyBURLError",
     "AnytimeConfig",
     "AnytimeLearner",
     "AnytimeReport",
     "Atom",
+    "ConfigurationError",
     "EntityBalancedTripleSampler",
     "EntityScorer",
     "EvaluationConfig",
+    "GraphSchemaError",
     "GroundingMode",
     "HeteroGraph",
+    "InvalidRuleError",
     "InverseEdgeHandling",
     "LengthReport",
     "LinkPredictionEvaluator",
     "LinkPredictionMetrics",
     "MetaPathScorer",
+    "NotFittedError",
     "PopularityScorer",
     "Prediction",
     "PredictionConfig",

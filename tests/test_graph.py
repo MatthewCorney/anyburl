@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl.graph import HeteroGraph
+from anyburl.graph import HeteroGraph, mirrored_edge_type
 
 
 def test_builds_from_valid_data(simple_graph: HeteroGraph) -> None:
@@ -133,3 +133,11 @@ def test_edge_index_shape(simple_graph: HeteroGraph) -> None:
 def test_edge_index_unknown(simple_graph: HeteroGraph) -> None:
     with pytest.raises(ValueError, match="Unknown edge type"):
         simple_graph.edge_index(("person", "flies_to", "city"))
+
+
+def test_mirrored_edge_type_swaps_endpoints() -> None:
+    assert mirrored_edge_type(("person", "lives_in", "city")) == (
+        "city",
+        "lives_in",
+        "person",
+    )

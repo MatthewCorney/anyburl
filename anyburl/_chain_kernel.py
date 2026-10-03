@@ -1,24 +1,15 @@
-"""Numba ``@njit`` kernel counting a body chain's groundings without building it.
+"""Numba kernel counting a body chain's groundings without building its product.
 
 Rule evaluation needs two integers per source row: how many distinct entities
 the body chain reaches, and how many of those the head relation already
-connects. The sparse-matmul route derives them by materialising the whole
-product --- 93.2 million non-zeros for BIOKG's worst chain, costing 1.3-1.6 GB
-of matmul workspace that the allocator never returns.
+connects. The kernel walks the chain one row at a time, deduplicating each
+level's reachable set with a *timestamp* array: a node belongs to the current
+level when its mark equals the current stamp, so nothing is cleared between
+rows or levels.
 
-This kernel walks the chain a row at a time instead. Each level's reachable
-set is deduplicated with a *timestamp* array: a node belongs to the current
-level when its mark equals the current stamp, so nothing has to be cleared
-between rows or levels. That reproduces sparse-matmul semantics exactly, since
-``nnz`` counts distinct ``(row, col)`` pairs and ``to_torch_csr_tensor``
-coalesces duplicate edges.
-
-The stamp advances **per level**, not per row. This is load-bearing: on
-``interacts_with -> interacts_with -> is_annotated_to`` the node type
-``protein`` appears at levels 0, 1 and 2, so a single stamp per row would
-suppress a node at level 2 merely because level 1 had already reached it.
-
-Scratch is a few arrays sized by node count --- about 1.6 MB on BIOKG.
+The stamp advances per level, not per row. A node type can recur at several
+levels of one chain, and a per-row stamp would wrongly suppress a node at a
+later level because an earlier level had already reached it.
 """
 
 from __future__ import annotations

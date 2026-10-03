@@ -1,10 +1,4 @@
-"""Numba-backed random walk engine.
-
-Drop-in replacement for :class:`~anyburl.walk.walker.WalkEngine` that runs
-the JIT-compiled kernel in :mod:`anyburl.walk._numba_kernel`. The public
-API (:meth:`walk_from_triple`) is identical, so the pipeline, generalizer,
-and tests are unaffected.
-"""
+"""Random walk engine backed by a JIT-compiled Numba kernel."""
 
 from __future__ import annotations
 
@@ -17,8 +11,7 @@ from ..rule import PathStep
 from ._numba_graph import NO_RELATION_ID, build_numba_graph_view
 from ._numba_kernel import STEP_FIELDS, WALK_FAILED, run_walks
 from ._reachability import MAX_TRACKED_STEPS, build_step_tables
-from .base import EdgeWeighting, WalkConfig, WalkStrategy
-from .walker import EMPTY_RELATION
+from .base import EMPTY_RELATION, EdgeWeighting, WalkConfig, WalkStrategy
 
 if TYPE_CHECKING:
     from ..graph import HeteroGraph
@@ -31,8 +24,9 @@ class NumbaWalkEngine:
     """Runs random walks via a JIT-compiled kernel over integer arrays.
 
     Supports :attr:`WalkStrategy.UNIFORM` and
-    :attr:`WalkStrategy.REACHABILITY_PRUNED`; both run the same kernel,
-    differing only in the candidate table it indexes.
+    :attr:`WalkStrategy.REACHABILITY_PRUNED` with either
+    :class:`EdgeWeighting`, and exposes the same ``walk_from_triple`` method
+    as :class:`~anyburl.walk.WalkEngine`.
 
     Parameters
     ----------
@@ -56,8 +50,9 @@ class NumbaWalkEngine:
         self._out_buffer = np.empty(buffer_shape, dtype=np.int64)
         self._out_lengths = np.empty(config.max_attempts, dtype=np.int64)
 
+    @staticmethod
     def _edge_weights(
-        self, graph: HeteroGraph, weighting: EdgeWeighting
+        graph: HeteroGraph, weighting: EdgeWeighting
     ) -> np.ndarray | None:
         """Return a per-edge-type selection weight, or ``None`` for uniform.
 
@@ -80,7 +75,7 @@ class NumbaWalkEngine:
             case EdgeWeighting.INVERSE_FREQUENCY:
                 counts = np.array(
                     [
-                        max(1, graph.edge_count(et))
+                        graph.edge_count(et)
                         for et in graph.edge_types
                         if graph.edge_count(et) > 0
                     ],

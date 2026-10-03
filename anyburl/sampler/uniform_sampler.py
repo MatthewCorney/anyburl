@@ -1,4 +1,4 @@
-"""Triple sampling from a heterogeneous knowledge graph."""
+"""Triple sampler that draws every edge with equal probability."""
 
 import torch
 

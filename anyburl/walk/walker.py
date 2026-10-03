@@ -6,23 +6,25 @@ from .._logging import get_logger
 from ..graph import EdgeTypeTuple, HeteroGraph
 from ..rule import PathStep
 from ..sampler import Triple
-from .base import WalkConfig
+from .base import EMPTY_RELATION, WalkConfig
 from .relation_weighted_selector import RelationWeightedEdgeSelector
 from .uniform_selector import UniformEdgeSelector
 
 logger = get_logger(__name__)
 
-DEFAULT_MAX_WALK_LENGTH: int = 5
-DEFAULT_MIN_WALK_LENGTH: int = 2
-DEFAULT_MAX_WALK_ATTEMPTS: int = 100
-DEFAULT_RANDOM_SEED: int = 42
-
-EMPTY_RELATION: str = ""
-"""Sentinel relation for the final step in a walk path."""
-
 
 class WalkEngine:
-    """Performs random walks using a pluggable edge-selection strategy."""
+    """Performs random walks using a pluggable edge-selection strategy.
+
+    Parameters
+    ----------
+    graph : HeteroGraph
+        The knowledge graph to walk over.
+    config : WalkConfig
+        Walk lengths, attempts and seed.
+    selector : UniformEdgeSelector | RelationWeightedEdgeSelector
+        Chooses the edge type taken at each step.
+    """
 
     def __init__(
         self,
@@ -36,7 +38,18 @@ class WalkEngine:
         self._generator = torch.Generator().manual_seed(config.seed)
 
     def walk_from_triple(self, triple: Triple) -> list[list[PathStep]]:
-        """Run random walks from a target triple's head toward its tail."""
+        """Run random walks from a target triple's head toward its tail.
+
+        Parameters
+        ----------
+        triple : Triple
+            The target triple providing walk start and goal.
+
+        Returns
+        -------
+        list[list[PathStep]]
+            Unique successful walk paths.
+        """
         seen: set[tuple[PathStep, ...]] = set()
         paths: list[list[PathStep]] = []
 

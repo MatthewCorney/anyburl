@@ -3,10 +3,15 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ..exceptions import ConfigurationError
+
 DEFAULT_MAX_WALK_LENGTH: int = 5
 DEFAULT_MIN_WALK_LENGTH: int = 2
 DEFAULT_MAX_WALK_ATTEMPTS: int = 100
 DEFAULT_RANDOM_SEED: int = 42
+
+EMPTY_RELATION: str = ""
+"""Relation of a walk's final step, which has no outgoing edge."""
 
 
 class WalkStrategy(StrEnum):
@@ -22,13 +27,8 @@ class WalkStrategy(StrEnum):
     REACHABILITY_PRUNED : str
         Like ``UNIFORM``, but only among edge types whose destination node
         type can still reach the walk's target type within the remaining
-        steps. On graphs with many relations most choices are dead ends ---
-        on BIOKG only 3 of a protein's 25 outgoing types can ever reach a
-        phenotype, and ``function`` cannot reach one at all --- so uniform
-        selection spends nearly all its attempts in regions with zero
-        chance of success. Pruning removes only provably hopeless
-        continuations, though it does change the distribution over the
-        successful paths that remain.
+        steps. Removes only hopeless continuations, though it changes the
+        distribution over the successful paths that remain.
     """
 
     UNIFORM = "uniform"
@@ -39,8 +39,8 @@ class WalkStrategy(StrEnum):
 class EdgeWeighting(StrEnum):
     """How much weight each candidate edge type gets at a step.
 
-    Orthogonal to :class:`WalkStrategy`, which decides *which* edge types
-    are candidates at all. Both apply to the Numba engine.
+    Orthogonal to :class:`WalkStrategy`, which decides which edge types are
+    candidates at all. Applies to :class:`~anyburl.walk.NumbaWalkEngine`.
 
     Attributes
     ----------
@@ -48,9 +48,7 @@ class EdgeWeighting(StrEnum):
         Every candidate edge type is equally likely.
     INVERSE_FREQUENCY : str
         Weight a candidate by the reciprocal of how many edges its type
-        has, so abundant relations stop crowding out rare ones. On BIOKG
-        ``interacts_with`` holds 864k edges against ``is_a``'s 7.7k, so
-        uniform choice buries the rarer relation's rules.
+        has, so abundant relations do not crowd out rare ones.
     """
 
     UNIFORM = "uniform"
@@ -70,13 +68,15 @@ class WalkConfig:
     max_attempts : int
         Maximum walk attempts per target triple before giving up.
     strategy : WalkStrategy
-        How to select the next edge during a walk.
+        Which edge types are candidates at each step.
+    edge_weighting : EdgeWeighting
+        How candidate edge types are weighted.
     seed : int
         Random seed for reproducibility.
 
     Raises
     ------
-    ValueError
+    ConfigurationError
         If any parameter is out of its valid range.
     """
 
@@ -90,13 +90,19 @@ class WalkConfig:
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if self.max_length < 1:
-            raise ValueError(f"max_length must be positive, got {self.max_length}")
+            raise ConfigurationError(
+                f"max_length must be positive, got {self.max_length}"
+            )
         if self.min_length < 1:
-            raise ValueError(f"min_length must be positive, got {self.min_length}")
+            raise ConfigurationError(
+                f"min_length must be positive, got {self.min_length}"
+            )
         if self.min_length > self.max_length:
-            raise ValueError(
+            raise ConfigurationError(
                 f"min_length ({self.min_length}) must be <= "
                 f"max_length ({self.max_length})"
             )
         if self.max_attempts < 1:
-            raise ValueError(f"max_attempts must be positive, got {self.max_attempts}")
+            raise ConfigurationError(
+                f"max_attempts must be positive, got {self.max_attempts}"
+            )

@@ -1,7 +1,10 @@
 """HeteroGraph wrapper over PyG HeteroData with CSR-backed operations."""
 
 import warnings
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import pairwise
 
 import torch
 from torch import Tensor
@@ -9,16 +12,69 @@ from torch_geometric.data import HeteroData
 from torch_geometric.utils import to_torch_csr_tensor
 
 from ._logging import get_logger
+from .exceptions import GraphSchemaError, InvalidRuleError
 
 logger = get_logger(__name__)
 
 EdgeTypeTuple = tuple[str, str, str]
 """(source_node_type, relation, destination_node_type)."""
 
+SPARSE_CSR_WARNING_PATTERN: str = ".*Sparse CSR tensor support.*"
+"""Message of torch's beta warning emitted by every sparse CSR operation."""
+
+
+@contextmanager
+def suppress_sparse_csr_warning() -> Iterator[None]:
+    """Silence torch's sparse CSR beta warning within the block."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=SPARSE_CSR_WARNING_PATTERN)
+        yield
+
+
+def mirrored_edge_type(edge_type: EdgeTypeTuple) -> EdgeTypeTuple:
+    """Return ``edge_type`` with its endpoint node types swapped.
+
+    Parameters
+    ----------
+    edge_type : EdgeTypeTuple
+        A ``(src_type, relation, dst_type)`` triple.
+
+    Returns
+    -------
+    EdgeTypeTuple
+        ``(dst_type, relation, src_type)``.
+    """
+    src_type, relation, dst_type = edge_type
+    return (dst_type, relation, src_type)
+
+
+def validate_chain(chain: Sequence[EdgeTypeTuple]) -> None:
+    """Check that a chain of edge types is non-empty and joins end to end.
+
+    Parameters
+    ----------
+    chain : Sequence[EdgeTypeTuple]
+        Edge types in traversal order.
+
+    Raises
+    ------
+    InvalidRuleError
+        If ``chain`` is empty or one edge type does not start where the
+        previous one ends.
+    """
+    if not chain:
+        raise InvalidRuleError("chain must contain at least one edge type")
+    for earlier, later in pairwise(chain):
+        if earlier[2] != later[0]:
+            raise InvalidRuleError(
+                f"chain does not join: {earlier!r} ends in {earlier[2]!r} "
+                f"but {later!r} starts at {later[0]!r}"
+            )
+
 
 @dataclass(frozen=True, slots=True)
-class _EdgeTypeIndex:
-    """CSR index data for a single edge type.
+class CsrIndex:
+    """CSR structure of a single edge type.
 
     Parameters
     ----------
@@ -41,8 +97,8 @@ class _EdgeTypeIndex:
 class HeteroGraph:
     """Wraps a PyG ``HeteroData`` with precomputed CSR indices.
 
-    Provides efficient neighbor lookup, CSR matrix retrieval for sparse
-    matmul-based rule grounding, and edge sampling support.
+    Provides neighbor lookup, per-edge-type CSR matrices and node and edge
+    counts.
 
     Parameters
     ----------
@@ -52,14 +108,14 @@ class HeteroGraph:
 
     Raises
     ------
-    ValueError
+    GraphSchemaError
         If the graph has no edge types or all edge indices are empty.
     """
 
     def __init__(self, data: HeteroData) -> None:
         edge_types: list[EdgeTypeTuple] = data.edge_types
         if not edge_types:
-            raise ValueError("HeteroData has no edge types")
+            raise GraphSchemaError("HeteroData has no edge types")
 
         self._node_counts: dict[str, int] = {}
         for node_type in data.node_types:
@@ -67,7 +123,7 @@ class HeteroGraph:
 
         self._edge_indices: dict[EdgeTypeTuple, Tensor] = {}
         self._edge_counts: dict[EdgeTypeTuple, int] = {}
-        self._csr_index: dict[EdgeTypeTuple, _EdgeTypeIndex] = {}
+        self._csr_index: dict[EdgeTypeTuple, CsrIndex] = {}
 
         has_edges = False
         for et in edge_types:
@@ -81,12 +137,9 @@ class HeteroGraph:
             has_edges = True
             num_src = self._node_counts[src_type]
             num_dst = self._node_counts[dst_type]
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", message=".*Sparse CSR tensor support.*"
-                )
+            with suppress_sparse_csr_warning():
                 csr = to_torch_csr_tensor(edge_index, size=(num_src, num_dst))
-            self._csr_index[et] = _EdgeTypeIndex(
+            self._csr_index[et] = CsrIndex(
                 crow_indices=csr.crow_indices(),
                 col_indices=csr.col_indices(),
                 num_src=num_src,
@@ -94,7 +147,7 @@ class HeteroGraph:
             )
 
         if not has_edges:
-            raise ValueError("All edge types have empty edge indices")
+            raise GraphSchemaError("All edge types have empty edge indices")
 
         self._outgoing_edge_types: dict[str, tuple[EdgeTypeTuple, ...]] = {}
         for node_type in data.node_types:
@@ -129,10 +182,10 @@ class HeteroGraph:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``edge_type`` is unknown or has no edges.
         """
-        idx = self._get_csr_index(edge_type)
+        idx = self.csr_index(edge_type)
         start = int(idx.crow_indices[node_id].item())
         end = int(idx.crow_indices[node_id + 1].item())
         return idx.col_indices[start:end]
@@ -155,16 +208,15 @@ class HeteroGraph:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``edge_type`` is unknown or has no edges.
         """
         cached = self._csr_matrix_cache.get(edge_type)
         if cached is not None:
             return cached
 
-        idx = self._get_csr_index(edge_type)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
+        idx = self.csr_index(edge_type)
+        with suppress_sparse_csr_warning():
             matrix = torch.sparse_csr_tensor(
                 idx.crow_indices,
                 idx.col_indices,
@@ -189,12 +241,12 @@ class HeteroGraph:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``node_type`` is unknown.
         """
         count = self._node_counts.get(node_type)
         if count is None:
-            raise ValueError(f"Unknown node type: {node_type!r}")
+            raise GraphSchemaError(f"Unknown node type: {node_type!r}")
         return count
 
     def edge_count(self, edge_type: EdgeTypeTuple) -> int:
@@ -212,22 +264,16 @@ class HeteroGraph:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``edge_type`` is unknown.
         """
         count = self._edge_counts.get(edge_type)
         if count is None:
-            raise ValueError(f"Unknown edge type: {edge_type!r}")
+            raise GraphSchemaError(f"Unknown edge type: {edge_type!r}")
         return count
 
     def total_edge_count(self) -> int:
-        """Return the total number of edges across all edge types.
-
-        Returns
-        -------
-        int
-            Sum of edge counts.
-        """
+        """Return the total number of edges across all edge types."""
         return sum(self._edge_counts.values())
 
     def outgoing_edge_types(self, node_type: str) -> tuple[EdgeTypeTuple, ...]:
@@ -248,12 +294,12 @@ class HeteroGraph:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``node_type`` is unknown.
         """
         result = self._outgoing_edge_types.get(node_type)
         if result is None:
-            raise ValueError(f"Unknown node type: {node_type!r}")
+            raise GraphSchemaError(f"Unknown node type: {node_type!r}")
         return result
 
     def edge_index(self, edge_type: EdgeTypeTuple) -> Tensor:
@@ -271,57 +317,47 @@ class HeteroGraph:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``edge_type`` is unknown.
         """
         ei = self._edge_indices.get(edge_type)
         if ei is None:
-            raise ValueError(f"Unknown edge type: {edge_type!r}")
+            raise GraphSchemaError(f"Unknown edge type: {edge_type!r}")
         return ei
 
     @property
     def node_types(self) -> tuple[str, ...]:
-        """Return all node types in the graph.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Node type names.
-        """
+        """Return all node types in the graph."""
         return tuple(self._node_counts.keys())
 
     @property
     def edge_types(self) -> tuple[EdgeTypeTuple, ...]:
-        """Return all edge types in the graph.
-
-        Returns
-        -------
-        tuple[EdgeTypeTuple, ...]
-            Edge type tuples.
-        """
+        """Return all edge types in the graph."""
         return tuple(self._edge_counts.keys())
 
-    def _get_csr_index(self, edge_type: EdgeTypeTuple) -> _EdgeTypeIndex:
-        """Look up the CSR index for an edge type, raising on unknown.
+    def csr_index(self, edge_type: EdgeTypeTuple) -> CsrIndex:
+        """Return the CSR structure of an edge type.
 
         Parameters
         ----------
         edge_type : EdgeTypeTuple
-            The edge type to look up.
+            The ``(src_type, relation, dst_type)`` edge type.
 
         Returns
         -------
-        _EdgeTypeIndex
-            The CSR index data.
+        CsrIndex
+            Row offsets, column indices and endpoint node counts.
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If ``edge_type`` is unknown or has no edges.
         """
         idx = self._csr_index.get(edge_type)
         if idx is None:
             if edge_type in self._edge_counts:
-                raise ValueError(f"Edge type {edge_type!r} exists but has no edges")
-            raise ValueError(f"Unknown edge type: {edge_type!r}")
+                raise GraphSchemaError(
+                    f"Edge type {edge_type!r} exists but has no edges"
+                )
+            raise GraphSchemaError(f"Unknown edge type: {edge_type!r}")
         return idx

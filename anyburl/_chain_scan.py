@@ -1,19 +1,19 @@
-"""Driver for the chain-counting kernel: validation, scratch and stamps.
+"""Driver for the chain-counting kernel.
 
-Mirrors the role :mod:`anyburl.walk.numba_engine` plays for the walk kernel ---
-it owns the flat tables, allocates the scratch buffers, keeps the stamp
-counter monotone across calls, and hands back plain Python results.
+Owns the flat CSR tables, validates chains, allocates scratch buffers, keeps
+the stamp counter monotone across calls and returns plain Python results.
 """
 
 from __future__ import annotations
 
-from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ._chain_kernel import FRONTIER_SLOTS, scan_chain_rows
 from ._csr_tables import CsrDirection, CsrTables, build_csr_tables
+from .exceptions import InvalidRuleError
+from .graph import mirrored_edge_type, validate_chain
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -23,12 +23,6 @@ if TYPE_CHECKING:
     from .graph import EdgeTypeTuple, HeteroGraph
 
 __all__ = ["ChainScanner"]
-
-
-def _swap(edge_type: EdgeTypeTuple) -> EdgeTypeTuple:
-    """Return an edge type with its endpoints exchanged."""
-    src_type, relation, dst_type = edge_type
-    return (dst_type, relation, src_type)
 
 
 class ChainScanner:
@@ -54,10 +48,8 @@ class ChainScanner:
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Scan a chain backwards, from its tail endpoint towards its head.
 
-        What an object-grounded AC1 rule needs: its constant sits on the tail,
-        so grounding runs from that entity back to the candidate heads. The
-        chain and the head relation are both transposed, and the reverse
-        tables are built on first use.
+        Used for object-grounded AC1 rules, whose constant sits on the tail.
+        The chain and the head relation are both transposed.
 
         Parameters
         ----------
@@ -76,7 +68,7 @@ class ChainScanner:
         """
         return self._scan(
             self._reversed(signature),
-            _swap(head_edge_type),
+            mirrored_edge_type(head_edge_type),
             rows,
             self._reverse(),
         )
@@ -135,11 +127,6 @@ class ChainScanner:
     ) -> NDArray[np.bool_]:
         """Return which source entities the chain connects to anything.
 
-        The row-wise counterpart of asking a materialised product which rows
-        hold a non-zero, which is all an AC2 rule needs: its disconnected
-        head variable ranges over every entity of its type, so only the
-        connected side has to be grounded.
-
         Parameters
         ----------
         signature : Sequence[EdgeTypeTuple]
@@ -158,9 +145,6 @@ class ChainScanner:
         self, signature: Sequence[EdgeTypeTuple]
     ) -> NDArray[np.bool_]:
         """Return which target entities the chain connects from anything.
-
-        The column-wise counterpart, answered by walking the chain backwards
-        from each candidate rather than by transposing a product.
 
         Parameters
         ----------
@@ -191,7 +175,7 @@ class ChainScanner:
         signature: Sequence[EdgeTypeTuple],
     ) -> tuple[EdgeTypeTuple, ...]:
         """Return the chain walked backwards, each edge type swapped."""
-        return tuple(_swap(edge_type) for edge_type in reversed(tuple(signature)))
+        return tuple(mirrored_edge_type(et) for et in reversed(tuple(signature)))
 
     def _scan(
         self,
@@ -265,23 +249,14 @@ class ChainScanner:
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Return the head relation's CSR arrays, padded when it has no edges.
 
-        A head type present in the graph but carrying no edges has no CSR
-        index, yet the kernel still needs a row-offset array to read, and it
-        must be long enough to index by any scanned row --- Numba does no
-        bounds checking, so a short array segfaults rather than raising.
+        The kernel indexes the row-offset array by every scanned row and does
+        no bounds checking, so when there is no head relation, or it has no
+        edges, an all-zero array spanning every source row is returned.
         """
-        if head_edge_type is None:
-            # The kernel still indexes this by source row, so it must span
-            # every row scanned even when no head relation is involved.
+        if head_edge_type is None or head_edge_type not in tables.edge_type_to_id:
             source_rows = self._graph.node_count(signature[0][0])
             return (
                 np.zeros(source_rows + 1, dtype=np.int64),
-                np.zeros(0, dtype=np.int64),
-            )
-        num_rows = self._graph.node_count(head_edge_type[0])
-        if head_edge_type not in tables.edge_type_to_id:
-            return (
-                np.zeros(num_rows + 1, dtype=np.int64),
                 np.zeros(0, dtype=np.int64),
             )
         head_id = tables.edge_type_to_id[head_edge_type]
@@ -302,29 +277,20 @@ class ChainScanner:
 
         Raises
         ------
-        ValueError
+        InvalidRuleError
             If the chain is empty, does not join end to end, or its endpoints
             disagree with the head relation's.
         """
-        if not signature:
-            raise ValueError("body chain must contain at least one edge type")
-
-        for earlier, later in pairwise(signature):
-            if earlier[2] != later[0]:
-                raise ValueError(
-                    f"body chain does not join: {earlier!r} ends in "
-                    f"{earlier[2]!r} but {later!r} starts at {later[0]!r}"
-                )
-
+        validate_chain(signature)
         if head_edge_type is None:
             return
         if signature[0][0] != head_edge_type[0]:
-            raise ValueError(
+            raise InvalidRuleError(
                 f"chain starts at {signature[0][0]!r} but head "
                 f"{head_edge_type!r} starts at {head_edge_type[0]!r}"
             )
         if signature[-1][2] != head_edge_type[2]:
-            raise ValueError(
+            raise InvalidRuleError(
                 f"chain ends at {signature[-1][2]!r} but head "
                 f"{head_edge_type!r} ends at {head_edge_type[2]!r}"
             )

@@ -3,6 +3,7 @@
 import torch
 
 from .._logging import get_logger
+from ..graph import EdgeTypeTuple
 from .base import BaseTripleSampler, Triple
 
 logger = get_logger(__name__)
@@ -11,16 +12,10 @@ logger = get_logger(__name__)
 class EntityBalancedTripleSampler(BaseTripleSampler):
     """Samples a head entity uniformly, then one of its edges.
 
-    Sampling edges uniformly draws a head with probability proportional to
-    its degree, so the rules learned describe hubs. Drawing the head first
-    spends the budget evenly across entities instead, which matters on
-    graphs whose degree distribution is skewed --- though not on every
-    graph: BIOKG's target relation is mild, with the top 1% of proteins
-    holding only 5.3% of edges.
-
-    Only meaningful with a single target edge type, since head identity is
-    not comparable across relations; with several eligible types this falls
-    back to balancing within each type in turn.
+    Uniform edge sampling picks a head with probability proportional to its
+    degree; drawing the head first spreads the sample evenly across
+    entities. With several eligible edge types the budget is split evenly
+    between them and balanced within each.
     """
 
     def sample(self) -> list[Triple]:
@@ -48,14 +43,12 @@ class EntityBalancedTripleSampler(BaseTripleSampler):
         base, remainder = divmod(wanted, types)
         return [base + (1 if i < remainder else 0) for i in range(types)]
 
-    def _sample_within(
-        self, edge_type: tuple[str, str, str], quota: int
-    ) -> list[Triple]:
+    def _sample_within(self, edge_type: EdgeTypeTuple, quota: int) -> list[Triple]:
         """Draw ``quota`` triples of one edge type, balanced across heads.
 
         Parameters
         ----------
-        edge_type : tuple[str, str, str]
+        edge_type : EdgeTypeTuple
             The edge type to sample from.
         quota : int
             How many triples to draw.

@@ -5,21 +5,21 @@ from dataclasses import dataclass, field
 from enum import Enum, StrEnum, auto
 from typing import assert_never
 
-# Variable name constants for rule generalization
+from .exceptions import ConfigurationError, InvalidRuleError
+
 SUBJECT_VARIABLE: str = "X"
 OBJECT_VARIABLE: str = "Y"
 INTERMEDIATE_VARIABLE_PREFIX: str = "Z"
 
-# Default thresholds for rule quality
 DEFAULT_MIN_SUPPORT: int = 2
 DEFAULT_MIN_CONFIDENCE: float = 0.01
 DEFAULT_MIN_HEAD_COVERAGE: float = 0.01
 
-# Path step: (entity_id, node_type, relation_traversed_to_next_entity).
-# Each step's relation is the outgoing edge used to reach the NEXT step's
-# entity. The final step is a sentinel (tail_entity_id, tail_node_type, "")
-# whose empty relation string _build_body_atoms always discards.
 PathStep = tuple[int, str, str]
+"""One walk step: ``(entity_id, node_type, relation_to_next_entity)``.
+
+The final step of a path holds the tail entity and an empty relation.
+"""
 
 
 class RuleType(StrEnum):
@@ -79,7 +79,7 @@ class Term:
 
     Raises
     ------
-    ValueError
+    InvalidRuleError
         If the combination of kind, name, and entity_id is invalid.
     """
 
@@ -93,14 +93,14 @@ class Term:
         match self.kind:
             case TermKind.VARIABLE:
                 if self.name is None:
-                    raise ValueError("VARIABLE term must have a name")
+                    raise InvalidRuleError("VARIABLE term must have a name")
                 if self.entity_id is not None:
-                    raise ValueError("VARIABLE term must not have an entity_id")
+                    raise InvalidRuleError("VARIABLE term must not have an entity_id")
             case TermKind.CONSTANT:
                 if self.entity_id is None:
-                    raise ValueError("CONSTANT term must have an entity_id")
+                    raise InvalidRuleError("CONSTANT term must have an entity_id")
                 if self.name is not None:
-                    raise ValueError("CONSTANT term must not have a name")
+                    raise InvalidRuleError("CONSTANT term must not have a name")
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -164,8 +164,7 @@ class Atom:
     subject : Term
         The first argument (source entity side).
     object_ : Term
-        The second argument (target entity side). Named with trailing
-        underscore to avoid shadowing the Python builtin.
+        The second argument (target entity side).
     """
 
     relation: str
@@ -184,12 +183,20 @@ class Atom:
         """
         return (self.subject.node_type, self.relation, self.object_.node_type)
 
-    def __str__(self) -> str:
-        """Return human-readable representation like ``person_born_in_city(X, Y)``.
+    @property
+    def variable_names(self) -> frozenset[str]:
+        """Return the names of this atom's variable terms."""
+        return frozenset(
+            str(term.name)
+            for term in (self.subject, self.object_)
+            if term.kind is TermKind.VARIABLE
+        )
 
-        The relation display includes source and destination node types
-        to disambiguate edges in heterogeneous graphs where the raw
-        relation string (e.g. ``"to"``) may be shared across edge types.
+    def __str__(self) -> str:
+        """Return a representation like ``person_born_in_city(X, Y)``.
+
+        Node types are included because one relation name may be shared by
+        several edge types.
         """
         src_type = self.subject.node_type
         dst_type = self.object_.node_type
@@ -203,12 +210,8 @@ class Rule:
     A rule has the form ``head :- body_1, body_2, ..., body_n`` where
     the head and each body atom are :class:`Atom` instances.
 
-    The body is a tuple of atoms whose topology is determined by shared
-    variables. The data structure can represent branching rules, but
-    the current walk engine only generates **linear chain** bodies
-    (each intermediate variable connects exactly two consecutive atoms),
-    and the evaluator's chain-matmul assumes a linear chain. Branching
-    rules would require a different grounding strategy.
+    Bodies are linear chains: each intermediate variable joins two
+    consecutive atoms, which is what evaluation and prediction assume.
 
     Parameters
     ----------
@@ -232,31 +235,16 @@ class Rule:
     @property
     def variables(self) -> frozenset[str]:
         """Return all variable names appearing in the rule."""
-        names: set[str] = set()
-        for atom in (self.head, *self.body):
-            if atom.subject.kind is TermKind.VARIABLE:
-                names.add(str(atom.subject.name))
-            if atom.object_.kind is TermKind.VARIABLE:
-                names.add(str(atom.object_.name))
-        return frozenset(names)
+        return frozenset().union(
+            *(atom.variable_names for atom in (self.head, *self.body))
+        )
 
     @property
     def is_tautological(self) -> bool:
-        """Check whether the rule is tautological.
+        """Return whether a body atom is identical to the head atom.
 
-        A rule is tautological when any body atom is identical to the
-        head atom (same relation AND same terms). For example,
-        ``p(X, Y) :- p(X, Y)`` is tautological because the body is
-        trivially satisfied by the head triple itself.
-
-        A body atom that shares only the edge type but uses different
-        variables (e.g. ``p(X, Z0)`` vs head ``p(X, Y)``) is NOT
-        tautological --- it constrains the prediction meaningfully.
-
-        Returns
-        -------
-        bool
-            ``True`` if the rule is tautological.
+        ``p(X, Y) :- p(X, Y)`` is tautological; ``p(X, Y) :- p(X, Z0)`` is
+        not, because its body uses different variables.
         """
         return any(atom == self.head for atom in self.body)
 
@@ -294,7 +282,7 @@ class RuleThresholds:
 
     Raises
     ------
-    ValueError
+    ConfigurationError
         If any parameter is out of its valid range.
     """
 
@@ -305,13 +293,15 @@ class RuleThresholds:
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if self.min_support < 1:
-            raise ValueError(f"min_support must be positive, got {self.min_support}")
+            raise ConfigurationError(
+                f"min_support must be positive, got {self.min_support}"
+            )
         if not (0.0 <= self.min_confidence <= 1.0):
-            raise ValueError(
+            raise ConfigurationError(
                 f"min_confidence must be in [0.0, 1.0], got {self.min_confidence}"
             )
         if not (0.0 <= self.min_head_coverage <= 1.0):
-            raise ValueError(
+            raise ConfigurationError(
                 f"min_head_coverage must be in [0.0, 1.0], got {self.min_head_coverage}"
             )
 
@@ -321,17 +311,10 @@ class RuleConfig:
     """Configuration for rule generalization and filtering.
 
     The top-level floors apply to every rule type unless ``per_type``
-    overrides them.
-
-    **Why per-type floors exist.** Head coverage is ``support`` over *all*
-    triples of the head relation. A cyclic rule ranges over the whole
-    relation and can approach 1.0, but an AC1 rule is pinned to one entity,
-    so its support cannot exceed that entity's degree and its achievable
-    head coverage is smaller by orders of magnitude. Judging both against
-    one floor does not rank them, it deletes the pinned ones: on DBLP a
-    0.005 floor admitted 3 of 3 cyclic rules and 0 of 6,517
-    object-grounded AC1 rules, whose ceiling was 0.00034. Give a rule type
-    its own floors rather than one it cannot reach.
+    overrides them. Head coverage in particular is not comparable across
+    types: an AC1 rule is pinned to one entity, so its support cannot exceed
+    that entity's degree, and it usually needs a much lower floor than a
+    cyclic rule.
 
     Parameters
     ----------
@@ -346,7 +329,7 @@ class RuleConfig:
 
     Raises
     ------
-    ValueError
+    ConfigurationError
         If any default parameter is out of its valid range.
     """
 
@@ -448,11 +431,11 @@ class RuleGeneralizer:
 
         Raises
         ------
-        ValueError
-            If the path structure is fundamentally invalid.
+        InvalidRuleError
+            If the path is empty.
         """
-        if len(path) < 1:
-            raise ValueError("Path must contain at least one step")
+        if not path:
+            raise InvalidRuleError("Path must contain at least one step")
 
         ctx = _GeneralizationContext(
             variable_map=self._assign_variables(path, head_type=head_type),
@@ -489,26 +472,11 @@ class RuleGeneralizer:
             is absent from the body, CYCLIC if both head variables
             appear in the body.
         """
-        head_subject_is_const = head.subject.kind is TermKind.CONSTANT
-        head_object_is_const = head.object_.kind is TermKind.CONSTANT
-
-        if head_subject_is_const or head_object_is_const:
+        if TermKind.CONSTANT in (head.subject.kind, head.object_.kind):
             return RuleType.AC1
 
-        body_variables: set[str] = set()
-        for atom in body:
-            if atom.subject.kind is TermKind.VARIABLE:
-                body_variables.add(str(atom.subject.name))
-            if atom.object_.kind is TermKind.VARIABLE:
-                body_variables.add(str(atom.object_.name))
-
-        head_vars_in_body = sum(
-            1
-            for term in (head.subject, head.object_)
-            if term.kind is TermKind.VARIABLE and term.name in body_variables
-        )
-
-        if head_vars_in_body >= 2:  # noqa: PLR2004
+        body_variables = frozenset().union(*(atom.variable_names for atom in body))
+        if head.variable_names <= body_variables:
             return RuleType.CYCLIC
         return RuleType.AC2
 
@@ -561,12 +529,9 @@ class RuleGeneralizer:
     ) -> Rule:
         """Create a fully-variable-head rule from the walk path.
 
-        Both head positions are variables (``X`` and ``Y``).
-        :meth:`classify_rule` determines the actual type: this will be
-        ``CYCLIC`` when both variables appear in the body, or ``AC2``
-        when the walk forms a true cycle and the tail entity equals the
-        head entity (in which case ``Y`` is never bound and is absent
-        from the body).
+        The rule is ``CYCLIC`` when both head variables appear in the body,
+        and ``AC2`` when the walk returns to its head entity, leaving ``Y``
+        absent from the body.
 
         Parameters
         ----------

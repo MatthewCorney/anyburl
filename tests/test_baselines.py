@@ -1,4 +1,4 @@
-"""Tests for the reference scorers used to calibrate a learned MRR."""
+"""Tests for the reference baseline scorers."""
 
 import pytest
 import torch
@@ -7,8 +7,8 @@ from anyburl.baselines import (
     MetaPathScorer,
     PopularityScorer,
     RandomScorer,
-    reverse_chain,
 )
+from anyburl.exceptions import InvalidRuleError
 from anyburl.graph import HeteroGraph
 
 TARGET = ("person", "lives_in", "city")
@@ -84,18 +84,10 @@ def test_meta_path_scorer_directions_agree(evaluator_graph: HeteroGraph) -> None
 
 
 def test_meta_path_scorer_rejects_empty_chain(evaluator_graph: HeteroGraph) -> None:
-    with pytest.raises(ValueError, match="at least one edge type"):
+    with pytest.raises(InvalidRuleError, match="at least one edge type"):
         MetaPathScorer(evaluator_graph, ())
 
 
 def test_meta_path_scorer_rejects_disjoint_chain(evaluator_graph: HeteroGraph) -> None:
-    """A chain whose endpoints do not meet cannot be multiplied."""
-    with pytest.raises(ValueError, match="does not join"):
+    with pytest.raises(InvalidRuleError, match="does not join"):
         MetaPathScorer(evaluator_graph, (NEAR, BORN_IN))
-
-
-def test_reverse_chain_flips_order_and_direction() -> None:
-    assert reverse_chain((BORN_IN, NEAR)) == (
-        ("city", "near", "city"),
-        ("city", "born_in", "person"),
-    )

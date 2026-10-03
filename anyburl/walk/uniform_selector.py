@@ -6,7 +6,13 @@ from ..graph import EdgeTypeTuple
 
 
 class UniformEdgeSelector:
-    """Select outgoing edge types uniformly."""
+    """Select outgoing edge types uniformly at random.
+
+    Parameters
+    ----------
+    generator : torch.Generator
+        Source of randomness.
+    """
 
     def __init__(self, generator: torch.Generator) -> None:
         self._generator = generator
@@ -17,12 +23,7 @@ class UniformEdgeSelector:
         candidates: tuple[EdgeTypeTuple, ...],
     ) -> EdgeTypeTuple:
         """Select one candidate edge type uniformly at random."""
-        idx = int(
-            torch.randint(
-                0,
-                len(candidates),
-                (1,),
-                generator=self._generator,
-            ).item()
+        index = int(
+            torch.randint(0, len(candidates), (1,), generator=self._generator).item()
         )
-        return candidates[idx]
+        return candidates[index]

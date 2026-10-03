@@ -1,14 +1,10 @@
-"""Hold out target-relation edges so link prediction can be scored honestly.
+"""Hold out target-relation edges as a link prediction test set.
 
-Learning rules from a graph and then ranking edges of that same graph
-measures memorisation, not prediction. :func:`split_target_edges` removes a
-fraction of one edge type from the training graph and returns those edges as
-test triples.
-
-Many heterogeneous datasets store each relation twice, once in each
-direction. Removing an edge only from the forward direction leaves its mirror
-in place, and a two-hop body chain walks straight back through it, so the
-default is to drop the mirrored inverse as well.
+:func:`split_target_edges` removes a fraction of one edge type from the
+training graph and returns those edges as test triples. Because many datasets
+store each relation in both directions, the mirrored inverse of each held-out
+edge is removed as well by default; otherwise a body chain could reach the
+held-out edge through its mirror.
 """
 
 from dataclasses import dataclass
@@ -18,7 +14,8 @@ import torch
 from torch_geometric.data import HeteroData
 
 from ._logging import get_logger
-from .graph import EdgeTypeTuple
+from .exceptions import ConfigurationError, GraphSchemaError
+from .graph import EdgeTypeTuple, mirrored_edge_type
 from .sampler import Triple
 
 logger = get_logger(__name__)
@@ -39,12 +36,9 @@ class InverseEdgeHandling(StrEnum):
     Attributes
     ----------
     REMOVE_MIRRORED : str
-        Also remove the inverse edges that mirror a held-out edge. The safe
-        default: without it a held-out edge stays reachable in one hop and
-        the evaluation is not honest. The inverse defaults to
-        ``(dst_type, relation, src_type)`` and is a no-op when the graph has
-        no such edge type, so a dataset that names its inverse differently
-        must say so via ``SplitConfig.inverse_edge_type``.
+        Also remove the inverse edges that mirror a held-out edge. The
+        inverse is ``SplitConfig.resolve_inverse()``; removal is a no-op when
+        the graph has no such edge type.
     KEEP : str
         Leave the reverse edge type untouched, asserting that it does not
         mirror the target relation.
@@ -69,17 +63,13 @@ class SplitConfig:
     inverse_handling : InverseEdgeHandling
         Whether to also remove the mirrored reverse edges.
     inverse_edge_type : EdgeTypeTuple | None
-        The edge type that mirrors the target. ``None`` (the default) means
-        ``(dst_type, relation, src_type)``, which covers datasets that store
-        both directions under one relation name. Datasets that name the
-        inverse differently --- BIOKG stores the inverse of
-        ``protein -is_annotated_to-> phenotype`` as
-        ``phenotype -has_annotated-> protein`` --- must name it here, or the
-        removal silently does nothing and the split leaks.
+        The edge type that mirrors the target. ``None`` means
+        ``(dst_type, relation, src_type)``. Datasets whose inverse uses a
+        different relation name must name it here, or nothing is removed.
 
     Raises
     ------
-    ValueError
+    ConfigurationError
         If ``test_fraction`` is not strictly between 0 and 1, or an explicit
         ``inverse_edge_type`` is combined with ``InverseEdgeHandling.KEEP``.
     """
@@ -93,14 +83,14 @@ class SplitConfig:
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if not 0.0 < self.test_fraction < 1.0:
-            raise ValueError(
+            raise ConfigurationError(
                 f"test_fraction must be in (0.0, 1.0), got {self.test_fraction}"
             )
         if (
             self.inverse_edge_type is not None
             and self.inverse_handling is InverseEdgeHandling.KEEP
         ):
-            raise ValueError(
+            raise ConfigurationError(
                 "inverse_edge_type names an edge type to remove, but "
                 "inverse_handling is KEEP; these contradict each other"
             )
@@ -135,29 +125,11 @@ class TripleSplit:
     test_triples: tuple[Triple, ...]
 
 
-def mirrored_edge_type(edge_type: EdgeTypeTuple) -> EdgeTypeTuple:
-    """Return the mirrored edge type of ``edge_type``.
-
-    Parameters
-    ----------
-    edge_type : EdgeTypeTuple
-        A ``(src_type, relation, dst_type)`` triple.
-
-    Returns
-    -------
-    EdgeTypeTuple
-        The same relation with its endpoint types swapped.
-    """
-    src_type, relation, dst_type = edge_type
-    return (dst_type, relation, src_type)
-
-
 def _edge_parallel_attributes(data: HeteroData, edge_type: EdgeTypeTuple) -> list[str]:
-    """Return edge-parallel attributes that filtering would desynchronise.
+    """Return edge-parallel attributes other than ``edge_index``.
 
-    Only ``edge_index`` is filtered when edges are held out. Any other
-    per-edge tensor would keep its original length and silently stop
-    lining up with the edges it describes.
+    Only ``edge_index`` is filtered when edges are held out, so any other
+    per-edge tensor would no longer line up with its edges.
 
     Parameters
     ----------
@@ -197,14 +169,16 @@ def split_target_edges(data: HeteroData, config: SplitConfig) -> TripleSplit:
 
     Raises
     ------
-    ValueError
-        If ``target_edge_type`` is absent from ``data``, the requested
-        fraction holds out no edges or all of them, or an affected edge
-        type carries edge-parallel attributes beyond ``edge_index``.
+    GraphSchemaError
+        If ``target_edge_type`` or an explicit inverse is absent from
+        ``data``, or an affected edge type carries edge-parallel attributes
+        beyond ``edge_index``.
+    ConfigurationError
+        If the requested fraction holds out no edges or all of them.
     """
     target = config.target_edge_type
     if target not in data.edge_types:
-        raise ValueError(
+        raise GraphSchemaError(
             f"target_edge_type {target!r} not in graph; "
             f"available edge types: {list(data.edge_types)!r}"
         )
@@ -216,7 +190,7 @@ def split_target_edges(data: HeteroData, config: SplitConfig) -> TripleSplit:
     num_edges = int(edge_index.size(1))
     num_test = int(num_edges * config.test_fraction)
     if num_test < 1 or num_test >= num_edges:
-        raise ValueError(
+        raise ConfigurationError(
             f"test_fraction {config.test_fraction} holds out {num_test} of "
             f"{num_edges} edges; choose a fraction leaving both splits non-empty"
         )
@@ -231,8 +205,21 @@ def split_target_edges(data: HeteroData, config: SplitConfig) -> TripleSplit:
     if config.inverse_handling is InverseEdgeHandling.REMOVE_MIRRORED:
         _remove_mirrored_edges(train_data, config.resolve_inverse(), test_edges)
 
-    src_type, relation, dst_type = target
-    test_triples = tuple(
+    logger.info(
+        "Split %r: %d train edges, %d test triples",
+        target,
+        num_edges - num_test,
+        num_test,
+    )
+    return TripleSplit(
+        train_data=train_data, test_triples=_as_triples(target, test_edges)
+    )
+
+
+def _as_triples(edge_type: EdgeTypeTuple, edges: torch.Tensor) -> tuple[Triple, ...]:
+    """Convert a ``(2, n)`` edge tensor of one edge type into triples."""
+    src_type, relation, dst_type = edge_type
+    return tuple(
         Triple(
             head_id=head_id,
             tail_id=tail_id,
@@ -240,26 +227,15 @@ def split_target_edges(data: HeteroData, config: SplitConfig) -> TripleSplit:
             tail_type=dst_type,
             relation=relation,
         )
-        for head_id, tail_id in zip(
-            test_edges[0].tolist(), test_edges[1].tolist(), strict=True
-        )
+        for head_id, tail_id in zip(edges[0].tolist(), edges[1].tolist(), strict=True)
     )
-
-    logger.info(
-        "Split %r: %d train edges, %d test triples",
-        target,
-        num_edges - num_test,
-        num_test,
-    )
-    return TripleSplit(train_data=train_data, test_triples=test_triples)
 
 
 def _reject_explicit_inverse_absent(data: HeteroData, config: SplitConfig) -> None:
     """Raise if a named ``inverse_edge_type`` is not in the graph.
 
-    Naming an inverse asserts it exists. The name-mirrored default may
-    legitimately be absent, but a typo in an explicit one would silently
-    leak the whole test set, so it must fail instead.
+    The default mirrored inverse may legitimately be absent, but an explicit
+    one that is missing is almost certainly a mistake.
 
     Parameters
     ----------
@@ -270,12 +246,12 @@ def _reject_explicit_inverse_absent(data: HeteroData, config: SplitConfig) -> No
 
     Raises
     ------
-    ValueError
+    GraphSchemaError
         If ``config.inverse_edge_type`` is set but absent from ``data``.
     """
     explicit = config.inverse_edge_type
     if explicit is not None and explicit not in data.edge_types:
-        raise ValueError(
+        raise GraphSchemaError(
             f"inverse_edge_type {explicit!r} not in graph; "
             f"available edge types: {list(data.edge_types)!r}"
         )
@@ -293,7 +269,7 @@ def _reject_unfilterable_edge_types(data: HeteroData, config: SplitConfig) -> No
 
     Raises
     ------
-    ValueError
+    GraphSchemaError
         If an affected edge type has edge-parallel attributes beyond
         ``edge_index``.
     """
@@ -310,7 +286,7 @@ def _reject_unfilterable_edge_types(data: HeteroData, config: SplitConfig) -> No
     for edge_type in affected:
         extra = _edge_parallel_attributes(data, edge_type)
         if extra:
-            raise ValueError(
+            raise GraphSchemaError(
                 f"edge type {edge_type!r} carries edge-parallel attributes "
                 f"{extra!r}; splitting filters only {EDGE_INDEX_KEY!r} and "
                 f"would leave them misaligned with the remaining edges"

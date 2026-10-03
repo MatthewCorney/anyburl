@@ -1,15 +1,10 @@
-"""The anytime mining loop: the behaviour AnyBURL is named for.
-
-A one-shot fit asks the caller to guess a sample size and a walk budget up
-front, and those guesses decide how much of the rule language is ever seen ---
-on BIOKG, raising the walk budget alone took the vocabulary from 11 distinct
-body chains to 48. Guessing is the loop's job, not the caller's.
+"""The anytime mining loop: mine rules by length within a time budget.
 
 Mining proceeds by rule length, shortest first. Within a length, batches are
 drawn until the rules coming back are overwhelmingly ones already known
-(*saturation*), at which point longer rules are worth more than more of the
-same. The whole run is bounded by a wall-clock budget, and because each batch
-is evaluated as it lands, the rule set is usable whenever the caller stops.
+(*saturation*), then mining moves to the next length. The run is bounded by a
+wall-clock budget, and each batch is evaluated as it lands, so the rule set is
+usable whenever the run stops.
 """
 
 import time
@@ -18,6 +13,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ._logging import get_logger
+from .exceptions import ConfigurationError
 from .metrics import RuleEvaluator, RuleMetrics
 from .rule import PathStep, Rule, RuleGeneralizer
 from .sampler import Triple
@@ -38,6 +34,12 @@ DEFAULT_TOTAL_SECONDS: float = 10.0
 
 DEFAULT_SATURATION: float = 0.01
 """New-rule fraction below which a length is considered exhausted."""
+
+DEFAULT_BATCH_SIZE: int = 500
+DEFAULT_MIN_RULE_LENGTH: int = 2
+DEFAULT_MAX_RULE_LENGTH: int = 4
+DEFAULT_MIN_BATCHES_PER_LENGTH: int = 1
+DEFAULT_SEED: int = 42
 
 
 class PathWalker(Protocol):
@@ -74,37 +76,43 @@ class AnytimeConfig:
 
     Raises
     ------
-    ValueError
+    ConfigurationError
         If a budget or bound is non-positive, the length range is
         inverted, or ``saturation`` is outside [0.0, 1.0].
     """
 
     total_seconds: float = DEFAULT_TOTAL_SECONDS
-    batch_size: int = 500
-    min_length: int = 2
-    max_length: int = 4
+    batch_size: int = DEFAULT_BATCH_SIZE
+    min_length: int = DEFAULT_MIN_RULE_LENGTH
+    max_length: int = DEFAULT_MAX_RULE_LENGTH
     saturation: float = DEFAULT_SATURATION
-    min_batches_per_length: int = 1
-    seed: int = 42
+    min_batches_per_length: int = DEFAULT_MIN_BATCHES_PER_LENGTH
+    seed: int = DEFAULT_SEED
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if self.total_seconds <= 0.0:
-            raise ValueError(
+            raise ConfigurationError(
                 f"total_seconds must be positive, got {self.total_seconds}"
             )
         if self.batch_size < 1:
-            raise ValueError(f"batch_size must be positive, got {self.batch_size}")
+            raise ConfigurationError(
+                f"batch_size must be positive, got {self.batch_size}"
+            )
         if self.min_length < 1:
-            raise ValueError(f"min_length must be positive, got {self.min_length}")
+            raise ConfigurationError(
+                f"min_length must be positive, got {self.min_length}"
+            )
         if self.max_length < self.min_length:
-            raise ValueError(
+            raise ConfigurationError(
                 f"max_length {self.max_length} is below min_length {self.min_length}"
             )
         if not 0.0 <= self.saturation <= 1.0:
-            raise ValueError(f"saturation must be in [0.0, 1.0], got {self.saturation}")
+            raise ConfigurationError(
+                f"saturation must be in [0.0, 1.0], got {self.saturation}"
+            )
         if self.min_batches_per_length < 1:
-            raise ValueError(
+            raise ConfigurationError(
                 "min_batches_per_length must be positive, got "
                 f"{self.min_batches_per_length}"
             )
@@ -180,14 +188,10 @@ class AnytimeReport:
 class MiningStages:
     """The collaborators the loop drives once per batch.
 
-    Passed in rather than constructed here so the loop stays independent
-    of how samplers and walkers are built.
-
     Parameters
     ----------
     sample_batch : Callable[[int], Sequence[Triple]]
-        Returns a fresh batch of target triples given a batch index. The
-        index is what makes successive batches differ.
+        Returns a fresh batch of target triples given a batch index.
     walker_for_length : Callable[[int], PathWalker]
         Returns a walker restricted to paths of exactly this length.
     generalizer : RuleGeneralizer
@@ -327,15 +331,12 @@ class AnytimeLearner:
 
     def _generalize_path(self, path: list[PathStep], triple: Triple) -> list[Rule]:
         """Generalize one path, returning only rules not yet seen."""
-        try:
-            candidates = self._stages.generalizer.generalize(
-                path,
-                target_relation=triple.relation,
-                head_type=triple.head_type,
-                tail_type=triple.tail_type,
-            )
-        except ValueError:
-            return []
+        candidates = self._stages.generalizer.generalize(
+            path,
+            target_relation=triple.relation,
+            head_type=triple.head_type,
+            tail_type=triple.tail_type,
+        )
 
         fresh: list[Rule] = []
         for rule in candidates:

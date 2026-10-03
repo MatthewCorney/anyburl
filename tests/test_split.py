@@ -7,7 +7,6 @@ from torch_geometric.data import HeteroData
 from anyburl.split import (
     InverseEdgeHandling,
     SplitConfig,
-    mirrored_edge_type,
     split_target_edges,
 )
 
@@ -27,10 +26,6 @@ def mirrored_data() -> HeteroData:
     data[TARGET].edge_index = torch.stack([heads, tails])
     data[INVERSE].edge_index = torch.stack([tails, heads])
     return data
-
-
-def test_mirrored_edge_type_swaps_endpoints() -> None:
-    assert mirrored_edge_type(TARGET) == INVERSE
 
 
 def test_split_removes_test_edges_from_training_graph(

@@ -1,9 +1,10 @@
-"""Relation-weighted triple sampler."""
+"""Triple sampler that weights edge types, uniform within each type."""
 
 import torch
 from torch import Tensor
 
 from .._logging import get_logger
+from ..exceptions import ConfigurationError
 from ..graph import HeteroGraph
 from .base import BaseTripleSampler, SamplerConfig, Triple
 
@@ -11,7 +12,22 @@ logger = get_logger(__name__)
 
 
 class WeightedTripleSampler(BaseTripleSampler):
-    """Weighted sampling over edge types, uniform within each type."""
+    """Weighted sampling over edge types, uniform within each type.
+
+    Parameters
+    ----------
+    graph : HeteroGraph
+        The graph to sample from.
+    config : SamplerConfig
+        Sample size, seed and optional target edge type.
+    weights : Tensor
+        Selection weight per eligible edge type, in graph order.
+
+    Raises
+    ------
+    ConfigurationError
+        If ``weights`` does not have one entry per eligible edge type.
+    """
 
     def __init__(
         self,
@@ -22,7 +38,7 @@ class WeightedTripleSampler(BaseTripleSampler):
         super().__init__(graph, config)
 
         if weights.shape[0] != len(self._edge_types):
-            raise ValueError("Weights must match number of edge types.")
+            raise ConfigurationError("Weights must match number of edge types.")
 
         self._weights = weights.float()
 

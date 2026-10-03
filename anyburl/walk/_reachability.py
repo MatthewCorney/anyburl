@@ -1,15 +1,9 @@
 """Per-step candidate edge tables, optionally pruned by type reachability.
 
-A uniform walker picks among every outgoing edge type, including ones whose
-destination node type can never reach the walk's target. On BIOKG that is most
-of them: from a protein only 3 of 25 outgoing types can ever reach a
-phenotype, and ``function`` is an absorbing sink --- 0 of its 5 outgoing types
-lead back to a phenotype --- so a walk entering it is already lost. Measured
-hit rates were 1 in 12,000 attempts at length 2 and 1 in 100,000 at length 4.
-
-This module precomputes, for every (target node type, current node type,
-steps remaining) triple, the edge types still worth taking. The same layout
-holds the unpruned candidate lists, so one kernel serves both strategies.
+For every (target node type, current node type, steps remaining) triple, the
+tables list the edge types a walk may take next. When pruned, edge types whose
+destination node type cannot reach the target within the remaining steps are
+left out. The unpruned lists share the same layout, so one kernel serves both.
 """
 
 from __future__ import annotations

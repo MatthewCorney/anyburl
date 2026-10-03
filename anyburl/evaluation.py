@@ -9,7 +9,7 @@ from typing import Protocol, assert_never
 import torch
 
 from ._logging import get_logger
-from .graph import HeteroGraph
+from .graph import EdgeTypeTuple, HeteroGraph
 from .sampler import Triple
 
 logger = get_logger(__name__)
@@ -27,9 +27,8 @@ TIE_MIDPOINT_FRACTION: float = 0.5
 class TieHandling(StrEnum):
     """How to rank a target that scores equal to other candidates.
 
-    Rule-based scores are coarse --- many candidates share a score, so
-    the choice here moves the headline metric substantially and should
-    be stated whenever results are reported.
+    Rule-based scores are coarse and ties are common, so this choice can
+    move the reported metrics substantially.
 
     Attributes
     ----------
@@ -87,11 +86,8 @@ def rank_with_ties(
 class EntityScorer(Protocol):
     """Scores candidate entities for a link prediction query.
 
-    :class:`~anyburl.prediction.RulePredictor` satisfies this, and so do
-    the heuristics in :mod:`anyburl.baselines`. Evaluating both through
-    one interface is what makes a learned MRR interpretable: on DBLP a
-    plain co-author path count already reaches 0.1374, so a rule model
-    scoring 0.19 is worth +38% over that, not 90x over zero.
+    Satisfied by :class:`~anyburl.prediction.RulePredictor` and by the
+    scorers in :mod:`anyburl.baselines`.
     """
 
     def score_tails(self, head_id: int) -> torch.Tensor:
@@ -159,8 +155,7 @@ class LinkPredictionEvaluator:
     Parameters
     ----------
     predictor : EntityScorer
-        Anything that scores candidates --- a fitted
-        :class:`~anyburl.prediction.RulePredictor` or a baseline.
+        The scorer being evaluated.
     graph : HeteroGraph
         The knowledge graph (used for filtering known triples).
     config : EvaluationConfig
@@ -201,200 +196,96 @@ class LinkPredictionEvaluator:
                 num_queries=0,
             )
 
-        head_edge_type = (
-            test_triples[0].head_type,
-            test_triples[0].relation,
-            test_triples[0].tail_type,
+        first = test_triples[0]
+        head_to_tails, tail_to_heads = self._build_adjacency_index(
+            (first.head_type, first.relation, first.tail_type)
         )
 
-        head_to_tails, tail_to_heads = self._build_adjacency_index(head_edge_type)
-
         ranks: list[float] = []
-
         for triple in test_triples:
-            tail_rank = self._compute_tail_rank(
-                triple.head_id, triple.tail_id, head_to_tails
+            ranks.append(
+                self._rank(
+                    self._predictor.score_tails(triple.head_id),
+                    triple.tail_id,
+                    head_to_tails.get(triple.head_id, set()),
+                )
             )
-            ranks.append(tail_rank)
-
-            head_rank = self._compute_head_rank(
-                triple.head_id, triple.tail_id, tail_to_heads
+            ranks.append(
+                self._rank(
+                    self._predictor.score_heads(triple.tail_id),
+                    triple.head_id,
+                    tail_to_heads.get(triple.tail_id, set()),
+                )
             )
-            ranks.append(head_rank)
 
         return self._aggregate_ranks(ranks)
 
-    def _compute_tail_rank(
-        self,
-        head_id: int,
-        true_tail_id: int,
-        head_to_tails: dict[int, set[int]],
-    ) -> float:
-        """Compute the filtered rank of the true tail entity.
-
-        Parameters
-        ----------
-        head_id : int
-            The source entity.
-        true_tail_id : int
-            The correct tail entity.
-        head_to_tails : dict[int, set[int]]
-            Known tails per head for filtering.
-
-        Returns
-        -------
-        float
-            The rank of the true tail (1-based), fractional when tied
-            under :attr:`TieHandling.AVERAGE`.
-        """
-        scores = self._predictor.score_tails(head_id)
-
-        if self._config.filter_known:
-            scores = self._filter_tail_scores(
-                scores, true_tail_id, head_to_tails.get(head_id, set())
-            )
-
-        return rank_with_ties(scores, true_tail_id, self._config.tie_handling)
-
-    def _compute_head_rank(
-        self,
-        true_head_id: int,
-        tail_id: int,
-        tail_to_heads: dict[int, set[int]],
-    ) -> float:
-        """Compute the filtered rank of the true head entity.
-
-        Parameters
-        ----------
-        true_head_id : int
-            The correct head entity.
-        tail_id : int
-            The destination entity.
-        tail_to_heads : dict[int, set[int]]
-            Known heads per tail for filtering.
-
-        Returns
-        -------
-        float
-            The rank of the true head (1-based), fractional when tied
-            under :attr:`TieHandling.AVERAGE`.
-        """
-        scores = self._predictor.score_heads(tail_id)
-
-        if self._config.filter_known:
-            scores = self._filter_head_scores(
-                scores, true_head_id, tail_to_heads.get(tail_id, set())
-            )
-
-        return rank_with_ties(scores, true_head_id, self._config.tie_handling)
-
-    @staticmethod
-    def _filter_tail_scores(
-        scores: torch.Tensor,
-        true_tail_id: int,
-        known_tails: set[int],
-    ) -> torch.Tensor:
-        """Set scores of known tails (except the target) to -1.
+    def _rank(self, scores: torch.Tensor, target: int, known: set[int]) -> float:
+        """Rank ``target`` among ``scores``, filtering ``known`` if configured.
 
         Parameters
         ----------
         scores : Tensor
-            1-D score tensor for all tails.
-        true_tail_id : int
-            The target tail (preserved).
-        known_tails : set[int]
-            Known tail IDs for the query head.
+            1-D score tensor over all candidates.
+        target : int
+            The correct candidate.
+        known : set[int]
+            Candidates already known to be true for this query.
 
         Returns
         -------
-        Tensor
-            Filtered scores (clone of input).
+        float
+            The 1-based rank of ``target``.
         """
-        filtered = scores.clone()
-        for t in known_tails:
-            if t != true_tail_id:
-                filtered[t] = FILTERED_SCORE
-        return filtered
-
-    @staticmethod
-    def _filter_head_scores(
-        scores: torch.Tensor,
-        true_head_id: int,
-        known_heads: set[int],
-    ) -> torch.Tensor:
-        """Set scores of known heads (except the target) to -1.
-
-        Parameters
-        ----------
-        scores : Tensor
-            1-D score tensor for all heads.
-        true_head_id : int
-            The target head (preserved).
-        known_heads : set[int]
-            Known head IDs for the query tail.
-
-        Returns
-        -------
-        Tensor
-            Filtered scores (clone of input).
-        """
-        filtered = scores.clone()
-        for h in known_heads:
-            if h != true_head_id:
-                filtered[h] = FILTERED_SCORE
-        return filtered
+        if self._config.filter_known:
+            scores = _filter_known(scores, target, known)
+        return rank_with_ties(scores, target, self._config.tie_handling)
 
     def _build_adjacency_index(
         self,
-        edge_type: tuple[str, str, str],
+        edge_type: EdgeTypeTuple,
     ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
-        """Build adjacency indices for fast per-entity filtering.
-
-        Parameters
-        ----------
-        edge_type : tuple[str, str, str]
-            The edge type to extract pairs from.
-
-        Returns
-        -------
-        tuple[dict[int, set[int]], dict[int, set[int]]]
-            ``(head_to_tails, tail_to_heads)`` mappings.
-        """
+        """Build ``(head_to_tails, tail_to_heads)`` maps of known triples."""
         ei = self._graph.edge_index(edge_type)
-        sources = ei[0].tolist()
-        destinations = ei[1].tolist()
-
         head_to_tails: dict[int, set[int]] = defaultdict(set)
         tail_to_heads: dict[int, set[int]] = defaultdict(set)
-        for h, t in zip(sources, destinations, strict=True):
-            head_to_tails[h].add(t)
-            tail_to_heads[t].add(h)
-
+        for head, tail in zip(ei[0].tolist(), ei[1].tolist(), strict=True):
+            head_to_tails[head].add(tail)
+            tail_to_heads[tail].add(head)
         return dict(head_to_tails), dict(tail_to_heads)
 
     def _aggregate_ranks(self, ranks: list[float]) -> LinkPredictionMetrics:
-        """Aggregate ranks into MRR and Hits@K metrics.
-
-        Parameters
-        ----------
-        ranks : list[float]
-            List of 1-based ranks.
-
-        Returns
-        -------
-        LinkPredictionMetrics
-            Aggregated metrics.
-        """
+        """Aggregate 1-based ranks into MRR and Hits@K metrics."""
         num_queries = len(ranks)
-        mrr = sum(1.0 / r for r in ranks) / num_queries
-
-        hits_at_k: dict[int, float] = {}
-        for k in self._config.k_values:
-            hits = sum(1 for r in ranks if r <= k)
-            hits_at_k[k] = hits / num_queries
-
         return LinkPredictionMetrics(
-            mrr=mrr,
-            hits_at_k=hits_at_k,
+            mrr=sum(1.0 / rank for rank in ranks) / num_queries,
+            hits_at_k={
+                k: sum(1 for rank in ranks if rank <= k) / num_queries
+                for k in self._config.k_values
+            },
             num_queries=num_queries,
         )
+
+
+def _filter_known(scores: torch.Tensor, target: int, known: set[int]) -> torch.Tensor:
+    """Return a copy of ``scores`` with known candidates other than ``target`` sunk.
+
+    Parameters
+    ----------
+    scores : Tensor
+        1-D score tensor over all candidates.
+    target : int
+        The candidate being ranked, which keeps its score.
+    known : set[int]
+        Candidates already known to be true for this query.
+
+    Returns
+    -------
+    Tensor
+        Filtered scores.
+    """
+    filtered = scores.clone()
+    others = [candidate for candidate in known if candidate != target]
+    if others:
+        filtered[others] = FILTERED_SCORE
+    return filtered

@@ -1,20 +1,12 @@
 """Flat integer CSR tables for the whole graph, shared by Numba kernels.
 
-Numba kernels cannot index a Python list of torch tensors, so a rule body has
-to reach them as plain arrays. Flattening *per rule* would rebuild those arrays
-for every rule and store a matrix twice whenever a chain repeats an edge type
---- BIOKG's worst chain uses ``interacts_with`` at two levels. Flattening the
-*graph* once avoids both: a body chain then reduces to an array of edge-type
-ids, so per-rule setup is a three-element array.
-
-The layout mirrors :mod:`anyburl.walk._numba_graph`: every edge type's CSR
-block is concatenated into one array, with an offset table giving each block's
-start.
+Every edge type's CSR block is concatenated into one array, with an offset
+table giving each block's start, so a kernel can address any edge type by an
+integer id.
 """
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -22,6 +14,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 from torch_geometric.utils import to_torch_csr_tensor
+
+from .exceptions import GraphSchemaError
+from .graph import mirrored_edge_type, suppress_sparse_csr_warning
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -42,9 +37,7 @@ class CsrDirection(StrEnum):
         Edges as stored, keyed by their own edge type.
     REVERSE : str
         Every edge type transposed and keyed by its swapped tuple
-        ``(dst_type, relation, src_type)``. Needed to ground an
-        object-grounded AC1 rule, which propagates from its constant tail
-        back towards candidate heads.
+        ``(dst_type, relation, src_type)``.
     """
 
     FORWARD = "forward"
@@ -101,13 +94,15 @@ class CsrTables:
 
         Raises
         ------
-        ValueError
+        GraphSchemaError
             If an edge type is absent from the tables, which happens when it
             has no edges.
         """
         missing = [et for et in signature if et not in self.edge_type_to_id]
         if missing:
-            raise ValueError(f"edge types absent from the graph tables: {missing!r}")
+            raise GraphSchemaError(
+                f"edge types absent from the graph tables: {missing!r}"
+            )
         return np.array([self.edge_type_to_id[et] for et in signature], dtype=np.int64)
 
 
@@ -118,8 +113,7 @@ def build_csr_tables(
 ) -> CsrTables:
     """Lower a graph's CSR indices into concatenated integer arrays.
 
-    Edge types with no edges are skipped, matching
-    :func:`~anyburl.walk._numba_graph.build_numba_graph_view`.
+    Edge types with no edges are skipped; the rest keep the graph's order.
 
     Parameters
     ----------
@@ -142,16 +136,16 @@ def build_csr_tables(
     edge_types: list[EdgeTypeTuple] = []
     for edge_type in stored:
         if direction is CsrDirection.FORWARD:
-            index = graph._get_csr_index(edge_type)
+            index = graph.csr_index(edge_type)
             crow, col = _as_int64(index.crow_indices), _as_int64(index.col_indices)
             rows, cols = index.num_src, index.num_dst
             edge_types.append(edge_type)
         else:
-            src_type, relation, dst_type = edge_type
+            src_type, _, dst_type = edge_type
             rows = graph.node_count(dst_type)
             cols = graph.node_count(src_type)
             crow, col = _reverse_csr(graph.edge_index(edge_type), rows, cols)
-            edge_types.append((dst_type, relation, src_type))
+            edge_types.append(mirrored_edge_type(edge_type))
         crow_blocks.append(crow)
         col_blocks.append(col)
         num_src.append(rows)
@@ -175,18 +169,13 @@ def _reverse_csr(
 ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     """Return the CSR structure of an edge type with its endpoints swapped."""
     flipped = torch.stack([edge_index[1], edge_index[0]])
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
+    with suppress_sparse_csr_warning():
         matrix = to_torch_csr_tensor(flipped, size=(num_rows, num_cols))
     return _as_int64(matrix.crow_indices()), _as_int64(matrix.col_indices())
 
 
 def _as_int64(tensor: object) -> NDArray[np.int64]:
-    """Return a tensor's buffer as a contiguous int64 array without copying.
-
-    ``to_torch_csr_tensor`` already produces int64 indices on CPU, so this is
-    a view. ``astype`` would copy roughly 18 MB per BIOKG graph for nothing.
-    """
+    """Return a CPU int64 tensor's buffer as a contiguous array, without copying."""
     array: NDArray[np.int64] = np.ascontiguousarray(tensor.numpy())  # type: ignore[attr-defined]
     return array
 

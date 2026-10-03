@@ -1,13 +1,9 @@
-"""Numba ``@njit`` random-walk kernel over flat integer graph arrays.
+"""Numba random-walk kernel over flat integer graph arrays.
 
-The kernel mirrors the semantics of
-:meth:`~anyburl.walk.walker.WalkEngine._single_walk`: from a start node it
-takes up to ``max_len`` steps, at each step choosing an outgoing edge type
-uniformly and then a neighbor uniformly, succeeding when it reaches the
-target tail no earlier than ``min_len`` steps.
-
-Results are written into caller-provided integer buffers to avoid any
-Python object churn inside the hot loop. See
+From a start node the kernel takes up to ``max_len`` steps, at each step
+choosing a candidate edge type from the step tables and then a neighbour
+uniformly, and succeeds when it reaches the target no earlier than
+``min_len`` steps. Results are written into caller-provided buffers; see
 :mod:`anyburl.walk._numba_graph` for the array layout.
 """
 
@@ -48,7 +44,7 @@ def run_walks(
     out_buffer: np.ndarray,
     out_lengths: np.ndarray,
 ) -> None:
-    """Run ``max_attempts`` uniform random walks from one start node.
+    """Run ``max_attempts`` random walks from one start node.
 
     Parameters
     ----------

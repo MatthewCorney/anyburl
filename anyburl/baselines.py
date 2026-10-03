@@ -1,10 +1,4 @@
-"""Reference scorers that give a learned MRR a scale to be read against.
-
-An MRR means nothing on its own. On DBLP, ranking papers at random scores
-0.0021, ranking by popularity scores 0.0120, and counting co-author paths
---- ten lines, no learning --- scores 0.1374, while the fitted rule model
-scores 0.1896. The learned rules are worth +38% over the best heuristic, not
-90x over nothing, and only the baselines make that visible.
+"""Reference scorers that give a learned model's metrics a scale.
 
 Each scorer satisfies :class:`~anyburl.evaluation.EntityScorer`, so
 :class:`~anyburl.evaluation.LinkPredictionEvaluator` measures them exactly as
@@ -12,21 +6,16 @@ it measures a fitted model.
 """
 
 from dataclasses import dataclass
-from itertools import pairwise
 
 import torch
 from torch import Tensor
 
-from ._logging import get_logger
-from .graph import EdgeTypeTuple, HeteroGraph
-
-logger = get_logger(__name__)
+from .graph import EdgeTypeTuple, HeteroGraph, validate_chain
 
 __all__ = [
     "MetaPathScorer",
     "PopularityScorer",
     "RandomScorer",
-    "reverse_chain",
 ]
 
 
@@ -56,10 +45,7 @@ class _Endpoints:
 
 
 class RandomScorer:
-    """Scores candidates uniformly at random --- the true floor.
-
-    Any model that cannot beat this is not ranking at all. Deterministic
-    given ``seed`` so a reported figure can be reproduced.
+    """Scores candidates uniformly at random, deterministically given ``seed``.
 
     Parameters
     ----------
@@ -95,9 +81,8 @@ class RandomScorer:
 class PopularityScorer:
     """Scores every candidate by its degree in the target relation.
 
-    The score ignores the query entirely, so it measures how much of a
-    benchmark is explained by "popular things are popular". A model close
-    to this number has learned the degree distribution and little else.
+    The score ignores the query, so it measures how much of the ranking is
+    explained by degree alone.
 
     Parameters
     ----------
@@ -129,33 +114,11 @@ class PopularityScorer:
         return self._head_degree.clone()
 
 
-def reverse_chain(chain: tuple[EdgeTypeTuple, ...]) -> tuple[EdgeTypeTuple, ...]:
-    """Return the edge-type chain that walks ``chain`` backwards.
-
-    Parameters
-    ----------
-    chain : tuple[EdgeTypeTuple, ...]
-        Edge types in forward order.
-
-    Returns
-    -------
-    tuple[EdgeTypeTuple, ...]
-        The same relations reversed in order and in endpoint direction.
-        Note the result names edge types that need not exist in a graph;
-        :class:`MetaPathScorer` transposes matrices rather than looking
-        these up.
-    """
-    return tuple((dst, relation, src) for src, relation, dst in reversed(chain))
-
-
 class MetaPathScorer:
     """Counts paths along one fixed edge-type chain, unweighted.
 
-    This is the strongest "obvious" heuristic for a benchmark: pick the
-    meta-path a domain expert would name --- co-authorship on DBLP --- and
-    rank by how many such paths connect the query to each candidate. It is
-    what a learned rule set has to beat to justify itself, since it is one
-    rule with confidence ignored.
+    Equivalent to a single cyclic rule scored by grounding count with its
+    confidence ignored.
 
     Parameters
     ----------
@@ -166,20 +129,12 @@ class MetaPathScorer:
 
     Raises
     ------
-    ValueError
+    InvalidRuleError
         If ``chain`` is empty or its edge types do not join end to end.
     """
 
     def __init__(self, graph: HeteroGraph, chain: tuple[EdgeTypeTuple, ...]) -> None:
-        if not chain:
-            raise ValueError("chain must contain at least one edge type")
-        for earlier, later in pairwise(chain):
-            if earlier[2] != later[0]:
-                raise ValueError(
-                    f"chain does not join: {earlier!r} ends in {earlier[2]!r} "
-                    f"but {later!r} starts at {later[0]!r}"
-                )
-
+        validate_chain(chain)
         self._matrices = tuple(graph.get_csr_matrix(et) for et in chain)
         self._num_heads = graph.node_count(chain[0][0])
         self._num_tails = graph.node_count(chain[-1][2])

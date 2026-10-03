@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Self, assert_never
 
 import torch
 from torch_geometric.data import HeteroData
@@ -17,21 +17,27 @@ from .anytime import (
     PathWalker,
 )
 from .evaluation import (
+    DEFAULT_K_VALUES,
     EvaluationConfig,
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
     TieHandling,
 )
-from .graph import HeteroGraph
+from .exceptions import NotFittedError
+from .graph import EdgeTypeTuple, HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics
-from .prediction import (
-    GroundingMode,
-    Prediction,
-    PredictionConfig,
-    RulePredictor,
-    ScoringStrategy,
+from .prediction import Prediction, PredictionConfig, RulePredictor
+from .rule import (
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MIN_HEAD_COVERAGE,
+    DEFAULT_MIN_SUPPORT,
+    PathStep,
+    Rule,
+    RuleConfig,
+    RuleGeneralizer,
+    RuleThresholds,
+    RuleType,
 )
-from .rule import PathStep, Rule, RuleConfig, RuleGeneralizer, RuleThresholds, RuleType
 from .sampler import (
     BaseTripleSampler,
     EntityBalancedTripleSampler,
@@ -48,11 +54,16 @@ from .walk import (
     WalkEngine,
     WalkStrategy,
 )
+from .walk.base import DEFAULT_MIN_WALK_LENGTH, DEFAULT_RANDOM_SEED
 
 logger = get_logger(__name__)
 
+DEFAULT_PIPELINE_SAMPLE_SIZE: int = 2000
+DEFAULT_PIPELINE_MAX_WALK_LENGTH: int = 4
+DEFAULT_PIPELINE_MAX_WALK_ATTEMPTS: int = 700
 
-@dataclass
+
+@dataclass(frozen=True, slots=True)
 class AnyBURLConfig:
     """Configuration for the AnyBURL pipeline.
 
@@ -62,7 +73,7 @@ class AnyBURLConfig:
         Number of triples to sample per iteration.
     sampling_strategy : SamplingStrategy
         How to weight triple selection.
-    target_edge_type : tuple[str, str, str] | None
+    target_edge_type : EdgeTypeTuple | None
         When set, only sample triples from this edge type.
     max_walk_length : int
         Maximum number of steps per random walk.
@@ -79,35 +90,61 @@ class AnyBURLConfig:
     min_head_coverage : float
         Minimum head coverage threshold for rule filtering.
     per_type_thresholds : Mapping[RuleType, RuleThresholds]
-        Floors replacing the defaults for the named rule types. Head
-        coverage in particular is not comparable across types --- see
-        :class:`~anyburl.rule.RuleConfig`.
+        Floors replacing the defaults for the named rule types.
     seed : int
         Random seed for reproducibility.
     """
 
-    sample_size: int = 2000
+    sample_size: int = DEFAULT_PIPELINE_SAMPLE_SIZE
     sampling_strategy: SamplingStrategy = SamplingStrategy.UNIFORM
-    target_edge_type: tuple[str, str, str] | None = None
+    target_edge_type: EdgeTypeTuple | None = None
 
-    max_walk_length: int = 4
-    min_walk_length: int = 2
-    max_walk_attempts: int = 700
+    max_walk_length: int = DEFAULT_PIPELINE_MAX_WALK_LENGTH
+    min_walk_length: int = DEFAULT_MIN_WALK_LENGTH
+    max_walk_attempts: int = DEFAULT_PIPELINE_MAX_WALK_ATTEMPTS
     walk_strategy: WalkStrategy = WalkStrategy.UNIFORM
 
-    min_support: int = 2
-    min_confidence: float = 0.01
-    min_head_coverage: float = 0.01
+    min_support: int = DEFAULT_MIN_SUPPORT
+    min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    min_head_coverage: float = DEFAULT_MIN_HEAD_COVERAGE
     per_type_thresholds: Mapping[RuleType, RuleThresholds] = field(default_factory=dict)
 
-    seed: int = 42
+    seed: int = DEFAULT_RANDOM_SEED
+
+    def sampler_config(self, *, seed_offset: int = 0) -> SamplerConfig:
+        """Return the sampler configuration, seeded with ``seed + seed_offset``."""
+        return SamplerConfig(
+            sample_size=self.sample_size,
+            strategy=self.sampling_strategy,
+            seed=self.seed + seed_offset,
+            target_edge_type=self.target_edge_type,
+        )
+
+    def walk_config(self, *, min_length: int, max_length: int) -> WalkConfig:
+        """Return the walk configuration for the given length bounds."""
+        return WalkConfig(
+            max_length=max_length,
+            min_length=min_length,
+            max_attempts=self.max_walk_attempts,
+            strategy=self.walk_strategy,
+            seed=self.seed,
+        )
+
+    def rule_config(self) -> RuleConfig:
+        """Return the rule quality configuration."""
+        return RuleConfig(
+            min_support=self.min_support,
+            min_confidence=self.min_confidence,
+            min_head_coverage=self.min_head_coverage,
+            per_type=self.per_type_thresholds,
+        )
 
 
 def build_triple_sampler(
     graph: HeteroGraph,
     config: SamplerConfig,
 ) -> BaseTripleSampler:
-    """Build a triple sampler based on the configured strategy.
+    """Build a triple sampler for the configured strategy.
 
     Parameters
     ----------
@@ -120,33 +157,28 @@ def build_triple_sampler(
     -------
     BaseTripleSampler
         A sampler instance.
-
-    Raises
-    ------
-    ValueError
-        If the strategy is not supported.
     """
-    if config.strategy is SamplingStrategy.UNIFORM:
-        return UniformTripleSampler(graph, config)
+    match config.strategy:
+        case SamplingStrategy.UNIFORM:
+            return UniformTripleSampler(graph, config)
+        case SamplingStrategy.ENTITY_BALANCED:
+            return EntityBalancedTripleSampler(graph, config)
+        case SamplingStrategy.RELATION_PROPORTIONAL:
+            weights = torch.ones(len(_non_empty_edge_counts(graph)))
+            return WeightedTripleSampler(graph, config, weights)
+        case SamplingStrategy.RELATION_INVERSE:
+            inverse = 1.0 / _non_empty_edge_counts(graph)
+            return WeightedTripleSampler(graph, config, inverse / inverse.sum())
+        case _ as unreachable:
+            assert_never(unreachable)
 
-    if config.strategy is SamplingStrategy.ENTITY_BALANCED:
-        return EntityBalancedTripleSampler(graph, config)
 
-    edge_counts = torch.tensor(
+def _non_empty_edge_counts(graph: HeteroGraph) -> torch.Tensor:
+    """Return the edge count of every edge type that has edges, in graph order."""
+    return torch.tensor(
         [graph.edge_count(et) for et in graph.edge_types if graph.edge_count(et) > 0],
         dtype=torch.float32,
     )
-
-    if config.strategy == SamplingStrategy.RELATION_PROPORTIONAL:
-        weights = torch.ones_like(edge_counts)
-    elif config.strategy == SamplingStrategy.RELATION_INVERSE:
-        weights = 1.0 / edge_counts
-        weights = weights / weights.sum()
-    else:
-        msg = f"Unsupported sampling strategy: {config.strategy}"
-        raise ValueError(msg)
-
-    return WeightedTripleSampler(graph, config, weights)
 
 
 def build_walk_engine(
@@ -155,10 +187,8 @@ def build_walk_engine(
 ) -> WalkEngine | NumbaWalkEngine:
     """Build a walk engine for the configured strategy.
 
-    Uniform and reachability-pruned walks use the JIT-compiled
-    :class:`NumbaWalkEngine`. The relation-weighted strategy uses the
-    reference :class:`WalkEngine`, which the Numba kernel does not yet
-    cover.
+    Uniform and reachability-pruned walks use :class:`NumbaWalkEngine`;
+    relation-weighted walks use :class:`WalkEngine`.
 
     Parameters
     ----------
@@ -171,32 +201,20 @@ def build_walk_engine(
     -------
     WalkEngine | NumbaWalkEngine
         A walk engine instance.
-
-    Raises
-    ------
-    ValueError
-        If the walk strategy is not supported.
     """
-    if config.strategy in (
-        WalkStrategy.UNIFORM,
-        WalkStrategy.REACHABILITY_PRUNED,
-    ):
-        return NumbaWalkEngine(graph, config)
-
-    if config.strategy is WalkStrategy.RELATION_WEIGHTED:
-        generator = torch.Generator().manual_seed(config.seed)
-        selector = RelationWeightedEdgeSelector(graph, generator)
-        return WalkEngine(graph, config, selector)
-
-    msg = f"Unsupported walk strategy: {config.strategy}"
-    raise ValueError(msg)
+    match config.strategy:
+        case WalkStrategy.UNIFORM | WalkStrategy.REACHABILITY_PRUNED:
+            return NumbaWalkEngine(graph, config)
+        case WalkStrategy.RELATION_WEIGHTED:
+            generator = torch.Generator().manual_seed(config.seed)
+            selector = RelationWeightedEdgeSelector(graph, generator)
+            return WalkEngine(graph, config, selector)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 class AnyBURL:
     """End-to-end AnyBURL rule learning pipeline.
-
-    Wires together all four stages of the AnyBURL algorithm: sampling
-    target triples, random walks, rule generalization, and evaluation.
 
     Parameters
     ----------
@@ -206,7 +224,7 @@ class AnyBURL:
     Attributes
     ----------
     graph : HeteroGraph | None
-        The wrapped graph, set after ``fit``.
+        The wrapped graph, set by ``fit``.
     triples : list[Triple]
         Sampled target triples.
     paths : list[tuple[list[PathStep], Triple]]
@@ -215,13 +233,8 @@ class AnyBURL:
         Deduplicated candidate rules from generalization.
     results : list[tuple[Rule, RuleMetrics]]
         Rules that passed quality thresholds, with their metrics.
-
-    Examples
-    --------
-    >>> config = AnyBURLConfig(sample_size=500, seed=0)
-    >>> pipeline = AnyBURL(config).fit(data)
-    >>> len(pipeline.results)
-    42
+    report : AnytimeReport | None
+        How the budget was spent, set by ``fit_anytime``.
     """
 
     def __init__(self, config: AnyBURLConfig) -> None:
@@ -235,10 +248,7 @@ class AnyBURL:
         self.report: AnytimeReport | None = None
 
     def fit(self, data: HeteroData) -> Self:
-        """Run the full AnyBURL learning pipeline.
-
-        Executes all four stages in order: sample triples, walk,
-        generalize, and evaluate. Results are stored on the instance.
+        """Sample triples, walk, generalize and evaluate, in that order.
 
         Parameters
         ----------
@@ -251,12 +261,13 @@ class AnyBURL:
             ``self``, for method chaining.
         """
         self.graph = HeteroGraph(data)
-
-        self._sample_triples()
-        self._walk()
+        self.triples = build_triple_sampler(
+            self.graph, self.config.sampler_config()
+        ).sample()
+        self._walk(self.graph)
         self._generalize()
-        self._evaluate()
-
+        evaluator = RuleEvaluator(self.graph, self.config.rule_config())
+        self.results = evaluator.evaluate_batch(self.rules)
         return self
 
     def fit_anytime(
@@ -264,24 +275,16 @@ class AnyBURL:
     ) -> Self:
         """Mine rules by increasing length within a wall-clock budget.
 
-        The alternative to :meth:`fit`, which mines one fixed
-        configuration. Here the loop keeps drawing batches at a length
-        until new rules dry up, then moves to longer bodies, stopping when
-        the budget runs out. ``sample_size`` and ``max_walk_attempts`` from
-        :class:`AnyBURLConfig` size a single batch rather than the run.
-
-        Results are stored on the instance, and :attr:`report` records how
-        the budget was spent --- worth reading, since a run that ends
-        un-saturated means a larger budget would still be finding rules.
+        ``sample_size`` and ``max_walk_attempts`` size a single batch rather
+        than the whole run. :attr:`report` records how the budget was spent.
 
         Parameters
         ----------
         data : HeteroData
             A PyTorch Geometric heterogeneous graph.
         anytime_config : AnytimeConfig | None
-            Budget and stopping rules. Defaults to
-            :class:`AnytimeConfig` with this pipeline's walk lengths and
-            seed.
+            Budget and stopping rules. ``None`` uses this pipeline's batch
+            size, walk lengths and seed.
 
         Returns
         -------
@@ -298,75 +301,25 @@ class AnyBURL:
             )
 
         self.graph = HeteroGraph(data)
-        learner = AnytimeLearner(self._build_mining_stages(), anytime_config)
+        learner = AnytimeLearner(self._mining_stages(self.graph), anytime_config)
         self.results, self.report = learner.learn()
         self.rules = [rule for rule, _ in self.results]
         return self
-
-    def _build_mining_stages(self) -> MiningStages:
-        """Wire the per-batch collaborators the anytime loop drives."""
-        graph = self._require_graph()
-        cfg = self.config
-
-        def sample_batch(batch_index: int) -> Sequence[Triple]:
-            sampler_config = SamplerConfig(
-                sample_size=cfg.sample_size,
-                strategy=cfg.sampling_strategy,
-                seed=cfg.seed + batch_index,
-                target_edge_type=cfg.target_edge_type,
-            )
-            return build_triple_sampler(graph, sampler_config).sample()
-
-        def walker_for_length(length: int) -> PathWalker:
-            walk_config = WalkConfig(
-                max_length=length,
-                min_length=length,
-                max_attempts=cfg.max_walk_attempts,
-                strategy=cfg.walk_strategy,
-                seed=cfg.seed,
-            )
-            return build_walk_engine(graph, walk_config)
-
-        return MiningStages(
-            sample_batch=sample_batch,
-            walker_for_length=walker_for_length,
-            generalizer=RuleGeneralizer(self._rule_config()),
-            evaluator=RuleEvaluator(graph, self._rule_config()),
-        )
-
-    def _rule_config(self) -> RuleConfig:
-        """Build the rule quality configuration from the pipeline config."""
-        cfg = self.config
-        return RuleConfig(
-            min_support=cfg.min_support,
-            min_confidence=cfg.min_confidence,
-            min_head_coverage=cfg.min_head_coverage,
-            per_type=cfg.per_type_thresholds,
-        )
 
     def predict(
         self,
         *,
         filter_known: bool = False,
-        scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
-        grounding_mode: GroundingMode = GroundingMode.AUTO,
+        prediction: PredictionConfig | None = None,
     ) -> list[Prediction]:
-        """Generate predictions by grounding learned rules against the graph.
-
-        Pre-computes product matrices per unique body chain, then
-        aggregates confidence scores across all rules via noisy-or,
-        weighted per ``scoring_strategy``.
+        """Score every candidate pair with the learned rules.
 
         Parameters
         ----------
         filter_known : bool
-            If ``True``, exclude predictions that correspond to edges
-            already present in the graph.
-        scoring_strategy : ScoringStrategy
-            How rule confidences are weighted against a candidate.
-        grounding_mode : GroundingMode
-            Whether body chains are materialised, grounded per query, or
-            chosen between by size.
+            If ``True``, exclude predictions already present in the graph.
+        prediction : PredictionConfig | None
+            Scoring and grounding settings. ``None`` uses the defaults.
 
         Returns
         -------
@@ -375,36 +328,21 @@ class AnyBURL:
 
         Raises
         ------
-        RuntimeError
-            If ``fit`` has not been called yet or produced no results.
+        NotFittedError
+            If ``fit`` has not been called or produced no rules.
         """
-        graph = self._require_graph()
-        if not self.results:
-            msg = (
-                "No rules found. Call fit(data) first and ensure rules pass thresholds."
-            )
-            raise RuntimeError(msg)
-        predictor = RulePredictor(
-            graph,
-            self.results,
-            scoring_strategy=scoring_strategy,
-            grounding_mode=grounding_mode,
-        )
-        return predictor.predict(filter_known=filter_known)
+        return self._build_predictor(prediction).predict(filter_known=filter_known)
 
     def evaluate_predictions(
         self,
         test_triples: Sequence[Triple],
         *,
-        k_values: tuple[int, ...] = (1, 3, 10),
+        k_values: tuple[int, ...] = DEFAULT_K_VALUES,
         filter_known: bool = True,
         tie_handling: TieHandling = TieHandling.AVERAGE,
         prediction: PredictionConfig | None = None,
     ) -> LinkPredictionMetrics:
         """Evaluate link prediction quality on test triples.
-
-        For each test triple, computes tail and head ranks using the
-        learned rules, then aggregates into MRR and Hits@K.
 
         Parameters
         ----------
@@ -426,130 +364,84 @@ class AnyBURL:
 
         Raises
         ------
-        RuntimeError
-            If ``fit`` has not been called yet or produced no results.
+        NotFittedError
+            If ``fit`` has not been called or produced no rules.
         """
-        graph = self._require_graph()
-        if not self.results:
-            msg = (
-                "No rules found. Call fit(data) first and ensure rules pass thresholds."
-            )
-            raise RuntimeError(msg)
-
-        if prediction is None:
-            prediction = PredictionConfig()
-        predictor = RulePredictor(
-            graph,
-            self.results,
-            scoring_strategy=prediction.scoring_strategy,
-            grounding_mode=prediction.grounding_mode,
-        )
+        predictor = self._build_predictor(prediction)
         config = EvaluationConfig(
             k_values=k_values,
             filter_known=filter_known,
             tie_handling=tie_handling,
         )
-        evaluator = LinkPredictionEvaluator(predictor, graph, config)
+        evaluator = LinkPredictionEvaluator(predictor, self._require_graph(), config)
         return evaluator.evaluate(test_triples)
 
     def _require_graph(self) -> HeteroGraph:
         """Return the graph, raising if ``fit`` has not been called."""
         if self.graph is None:
-            msg = "Pipeline must be fitted first. Call fit(data)."
-            raise RuntimeError(msg)
+            raise NotFittedError("Pipeline must be fitted first. Call fit(data).")
         return self.graph
 
-    def _sample_triples(self) -> None:
-        """Sample target triples from the graph."""
+    def _build_predictor(self, prediction: PredictionConfig | None) -> RulePredictor:
+        """Return a predictor over the learned rules."""
         graph = self._require_graph()
-        cfg = self.config
-
-        sampler_config = SamplerConfig(
-            sample_size=cfg.sample_size,
-            strategy=cfg.sampling_strategy,
-            seed=cfg.seed,
-            target_edge_type=cfg.target_edge_type,
+        if not self.results:
+            raise NotFittedError(
+                "No rules found. Call fit(data) first and ensure rules pass thresholds."
+            )
+        settings = prediction if prediction is not None else PredictionConfig()
+        return RulePredictor(
+            graph,
+            self.results,
+            scoring_strategy=settings.scoring_strategy,
+            grounding_mode=settings.grounding_mode,
         )
-        sampler = build_triple_sampler(graph, sampler_config)
-        self.triples = sampler.sample()
 
-    def _walk(self) -> None:
-        """Run random walks from each sampled triple."""
-        graph = self._require_graph()
+    def _mining_stages(self, graph: HeteroGraph) -> MiningStages:
+        """Wire the per-batch collaborators the anytime loop drives."""
         cfg = self.config
 
-        walk_config = WalkConfig(
-            max_length=cfg.max_walk_length,
-            min_length=cfg.min_walk_length,
-            max_attempts=cfg.max_walk_attempts,
-            strategy=cfg.walk_strategy,
-            seed=cfg.seed,
+        def sample_batch(batch_index: int) -> Sequence[Triple]:
+            sampler_config = cfg.sampler_config(seed_offset=batch_index)
+            return build_triple_sampler(graph, sampler_config).sample()
+
+        def walker_for_length(length: int) -> PathWalker:
+            walk_config = cfg.walk_config(min_length=length, max_length=length)
+            return build_walk_engine(graph, walk_config)
+
+        return MiningStages(
+            sample_batch=sample_batch,
+            walker_for_length=walker_for_length,
+            generalizer=RuleGeneralizer(cfg.rule_config()),
+            evaluator=RuleEvaluator(graph, cfg.rule_config()),
+        )
+
+    def _walk(self, graph: HeteroGraph) -> None:
+        """Run random walks from each sampled triple."""
+        walk_config = self.config.walk_config(
+            min_length=self.config.min_walk_length,
+            max_length=self.config.max_walk_length,
         )
         walker = build_walk_engine(graph, walk_config)
-
-        self.paths = []
-        total_paths = 0
-        for triple in tqdm(self.triples, desc="Building paths"):
-            paths = walker.walk_from_triple(triple)
-
-            n_paths = len(paths)
-            total_paths += n_paths
-
-            for path in paths:
-                self.paths.append((path, triple))
-
+        self.paths = [
+            (path, triple)
+            for triple in tqdm(self.triples, desc="Building paths")
+            for path in walker.walk_from_triple(triple)
+        ]
         logger.info(
-            "Finished. Total triples: %d | Total paths: %d",
-            len(self.triples),
-            total_paths,
+            "Total triples: %d | Total paths: %d", len(self.triples), len(self.paths)
         )
 
     def _generalize(self) -> None:
-        """Generalize walk paths into typed Horn rules."""
-        cfg = self.config
-
-        rule_config = RuleConfig(
-            min_support=cfg.min_support,
-            min_confidence=cfg.min_confidence,
-            min_head_coverage=cfg.min_head_coverage,
-            per_type=cfg.per_type_thresholds,
-        )
-
-        generalizer = RuleGeneralizer(rule_config)
-
-        seen: set[str] = set()
-        self.rules = []
-
-        for path, triple in tqdm(self.paths, desc="Generalizing Rules"):
-            try:
-                rules = generalizer.generalize(
-                    path,
-                    target_relation=triple.relation,
-                    head_type=triple.head_type,
-                    tail_type=triple.tail_type,
-                )
-            except ValueError:
-                continue
-
-            for rule in rules:
-                key = str(rule)
-                if key not in seen:
-                    seen.add(key)
-                    self.rules.append(rule)
-
-    def _evaluate(self) -> None:
-        """Evaluate candidate rules against quality thresholds."""
-        graph = self._require_graph()
-        cfg = self.config
-
-        evaluator = RuleEvaluator(
-            graph,
-            RuleConfig(
-                min_support=cfg.min_support,
-                min_confidence=cfg.min_confidence,
-                min_head_coverage=cfg.min_head_coverage,
-                per_type=cfg.per_type_thresholds,
-            ),
-        )
-
-        self.results = evaluator.evaluate_batch(self.rules)
+        """Generalize walk paths into deduplicated Horn rules."""
+        generalizer = RuleGeneralizer(self.config.rule_config())
+        unique: dict[str, Rule] = {}
+        for path, triple in tqdm(self.paths, desc="Generalizing rules"):
+            for rule in generalizer.generalize(
+                path,
+                target_relation=triple.relation,
+                head_type=triple.head_type,
+                tail_type=triple.tail_type,
+            ):
+                unique.setdefault(str(rule), rule)
+        self.rules = list(unique.values())
