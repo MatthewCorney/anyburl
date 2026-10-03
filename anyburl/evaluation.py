@@ -83,6 +83,40 @@ def rank_with_ties(
             assert_never(unreachable)
 
 
+class QueryDirection(StrEnum):
+    """Which endpoint of a test triple a query ranks.
+
+    Attributes
+    ----------
+    TAIL : str
+        Rank candidate tails given the head.
+    HEAD : str
+        Rank candidate heads given the tail.
+    """
+
+    TAIL = "tail"
+    HEAD = "head"
+
+
+@dataclass(frozen=True, slots=True)
+class QueryRank:
+    """The rank of one query's correct answer.
+
+    Parameters
+    ----------
+    direction : QueryDirection
+        Which endpoint was ranked.
+    target_id : int
+        The correct entity, local to its node type.
+    rank : float
+        Its 1-based rank, fractional under :attr:`TieHandling.AVERAGE`.
+    """
+
+    direction: QueryDirection
+    target_id: int
+    rank: float
+
+
 class EntityScorer(Protocol):
     """Scores candidate entities for a link prediction query.
 
@@ -189,36 +223,52 @@ class LinkPredictionEvaluator:
         LinkPredictionMetrics
             Aggregated MRR and Hits@K metrics.
         """
+        query_ranks = self.rank_queries(test_triples)
+        return summarize_ranks(
+            [query.rank for query in query_ranks], self._config.k_values
+        )
+
+    def rank_queries(self, test_triples: Sequence[Triple]) -> tuple[QueryRank, ...]:
+        """Rank the correct answer of every query, without aggregating.
+
+        Parameters
+        ----------
+        test_triples : Sequence[Triple]
+            Test triples, all of one relation. Each yields a tail query
+            followed by a head query.
+
+        Returns
+        -------
+        tuple[QueryRank, ...]
+            One rank per query, two per triple.
+        """
         if not test_triples:
-            return LinkPredictionMetrics(
-                mrr=0.0,
-                hits_at_k=dict.fromkeys(self._config.k_values, 0.0),
-                num_queries=0,
-            )
+            return ()
 
         first = test_triples[0]
         head_to_tails, tail_to_heads = self._build_adjacency_index(
             (first.head_type, first.relation, first.tail_type)
         )
 
-        ranks: list[float] = []
+        query_ranks: list[QueryRank] = []
         for triple in test_triples:
-            ranks.append(
-                self._rank(
-                    self._predictor.score_tails(triple.head_id),
-                    triple.tail_id,
-                    head_to_tails.get(triple.head_id, set()),
+            tail_rank = self._rank(
+                self._predictor.score_tails(triple.head_id),
+                triple.tail_id,
+                head_to_tails.get(triple.head_id, set()),
+            )
+            head_rank = self._rank(
+                self._predictor.score_heads(triple.tail_id),
+                triple.head_id,
+                tail_to_heads.get(triple.tail_id, set()),
+            )
+            query_ranks.extend(
+                (
+                    QueryRank(QueryDirection.TAIL, triple.tail_id, tail_rank),
+                    QueryRank(QueryDirection.HEAD, triple.head_id, head_rank),
                 )
             )
-            ranks.append(
-                self._rank(
-                    self._predictor.score_heads(triple.tail_id),
-                    triple.head_id,
-                    tail_to_heads.get(triple.tail_id, set()),
-                )
-            )
-
-        return self._aggregate_ranks(ranks)
+        return tuple(query_ranks)
 
     def _rank(self, scores: torch.Tensor, target: int, known: set[int]) -> float:
         """Rank ``target`` among ``scores``, filtering ``known`` if configured.
@@ -254,17 +304,34 @@ class LinkPredictionEvaluator:
             tail_to_heads[tail].add(head)
         return dict(head_to_tails), dict(tail_to_heads)
 
-    def _aggregate_ranks(self, ranks: list[float]) -> LinkPredictionMetrics:
-        """Aggregate 1-based ranks into MRR and Hits@K metrics."""
-        num_queries = len(ranks)
-        return LinkPredictionMetrics(
-            mrr=sum(1.0 / rank for rank in ranks) / num_queries,
-            hits_at_k={
-                k: sum(1 for rank in ranks if rank <= k) / num_queries
-                for k in self._config.k_values
-            },
-            num_queries=num_queries,
-        )
+
+def summarize_ranks(
+    ranks: Sequence[float], k_values: tuple[int, ...]
+) -> LinkPredictionMetrics:
+    """Aggregate 1-based ranks into MRR and Hits@K.
+
+    Parameters
+    ----------
+    ranks : Sequence[float]
+        One rank per query.
+    k_values : tuple[int, ...]
+        Hits@K thresholds.
+
+    Returns
+    -------
+    LinkPredictionMetrics
+        The metrics, all zero when ``ranks`` is empty.
+    """
+    num_queries = len(ranks)
+    if num_queries == 0:
+        return LinkPredictionMetrics(mrr=0.0, hits_at_k=dict.fromkeys(k_values, 0.0))
+    return LinkPredictionMetrics(
+        mrr=sum(1.0 / rank for rank in ranks) / num_queries,
+        hits_at_k={
+            k: sum(1 for rank in ranks if rank <= k) / num_queries for k in k_values
+        },
+        num_queries=num_queries,
+    )
 
 
 def _filter_known(scores: torch.Tensor, target: int, known: set[int]) -> torch.Tensor:

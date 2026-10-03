@@ -17,7 +17,8 @@ The learning process follows four stages:
    head coverage (:class:`RuleMetrics`) by counting body-chain groundings.
 
 Learned rules are applied by :class:`RulePredictor` and scored with
-:class:`LinkPredictionEvaluator`.
+:class:`LinkPredictionEvaluator`; :func:`stratify_by_degree` breaks its
+per-query ranks down by how well-connected each target is.
 
 Everything exported here is the public API. Subpackage modules prefixed with
 an underscore, and the :mod:`anyburl.chain` grounding engine, are internal.
@@ -45,7 +46,10 @@ from .evaluation import (
     EvaluationConfig,
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
+    QueryDirection,
+    QueryRank,
     TieHandling,
+    summarize_ranks,
 )
 from .exceptions import (
     AnyBURLError,
@@ -105,6 +109,13 @@ from .split import (
     TripleSplit,
     split_target_edges,
 )
+from .stratification import (
+    DegreeBucket,
+    RelationDegrees,
+    StratificationConfig,
+    relation_degrees,
+    stratify_by_degree,
+)
 from .walk import (
     EdgeWeighting,
     NumbaWalkEngine,
@@ -123,6 +134,7 @@ __all__ = [
     "Atom",
     "BaseTripleSampler",
     "ConfigurationError",
+    "DegreeBucket",
     "EdgeTypeTuple",
     "EdgeWeighting",
     "EntityBalancedTripleSampler",
@@ -143,7 +155,10 @@ __all__ = [
     "PopularityScorer",
     "Prediction",
     "PredictionConfig",
+    "QueryDirection",
+    "QueryRank",
     "RandomScorer",
+    "RelationDegrees",
     "Rule",
     "RuleConfig",
     "RuleEvaluator",
@@ -157,6 +172,7 @@ __all__ = [
     "SamplingStrategy",
     "ScoringStrategy",
     "SplitConfig",
+    "StratificationConfig",
     "Term",
     "TermKind",
     "TieHandling",
@@ -170,5 +186,8 @@ __all__ = [
     "aggregate_confidence",
     "build_triple_sampler",
     "build_walk_engine",
+    "relation_degrees",
     "split_target_edges",
+    "stratify_by_degree",
+    "summarize_ranks",
 ]

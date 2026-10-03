@@ -11,6 +11,7 @@ import torch
 from torch import Tensor
 
 from .graph import EdgeTypeTuple, HeteroGraph, validate_chain
+from .stratification import relation_degrees
 
 __all__ = [
     "MetaPathScorer",
@@ -93,15 +94,9 @@ class PopularityScorer:
     """
 
     def __init__(self, graph: HeteroGraph, target_edge_type: EdgeTypeTuple) -> None:
-        endpoints = _Endpoints.of(graph, target_edge_type)
-        edge_index = graph.edge_index(target_edge_type)
-        weights = torch.ones(edge_index.size(1))
-        self._tail_degree = torch.zeros(endpoints.num_tails).scatter_add_(
-            0, edge_index[1], weights
-        )
-        self._head_degree = torch.zeros(endpoints.num_heads).scatter_add_(
-            0, edge_index[0], weights
-        )
+        degrees = relation_degrees(graph, target_edge_type)
+        self._tail_degree = degrees.tail
+        self._head_degree = degrees.head
 
     def score_tails(self, head_id: int) -> Tensor:
         """Return each candidate tail's degree, ignoring the query."""
