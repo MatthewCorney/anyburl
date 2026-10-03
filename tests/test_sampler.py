@@ -5,6 +5,7 @@ from collections import Counter
 import pytest
 import torch
 
+from anyburl.exceptions import ConfigurationError, GraphSchemaError
 from anyburl.factories import build_triple_sampler
 from anyburl.graph import HeteroGraph
 from anyburl.sampler import (
@@ -16,6 +17,9 @@ from anyburl.sampler import (
     WeightedTripleSampler,
 )
 
+NEAR_EDGES = 3
+LIVES_IN_EDGES = 6
+
 
 def test_triple_is_frozen() -> None:
     t = Triple(head_id=0, tail_id=1, head_type="A", tail_type="B", relation="r")
@@ -25,12 +29,12 @@ def test_triple_is_frozen() -> None:
 
 @pytest.mark.parametrize("invalid_size", [0, -1])
 def test_sampler_config_invalid_sample_size(invalid_size: int) -> None:
-    with pytest.raises(ValueError, match="sample_size must be positive"):
+    with pytest.raises(ConfigurationError, match="sample_size must be positive"):
         SamplerConfig(sample_size=invalid_size)
 
 
 def test_sampler_config_invalid_target_edge_type() -> None:
-    with pytest.raises(ValueError, match="target_edge_type must be a 3-tuple"):
+    with pytest.raises(ConfigurationError, match="target_edge_type must be a 3-tuple"):
         SamplerConfig(target_edge_type=("only_two_elements",))  # type: ignore[arg-type]
 
 
@@ -88,11 +92,9 @@ def test_inverse_sample_favors_rare_relations(simple_graph: HeteroGraph) -> None
     for t in triples:
         relation_counts[t.relation] = relation_counts.get(t.relation, 0) + 1
 
-    # Inverse weighting: each rare edge gets higher per-edge sampling rate.
-    # simple_graph has near=3 edges, lives_in=6 edges.
     near_count = relation_counts.get("near", 0)
     lives_in_count = relation_counts.get("lives_in", 0)
-    assert near_count / 3 > lives_in_count / 6
+    assert near_count / NEAR_EDGES > lives_in_count / LIVES_IN_EDGES
 
 
 def test_target_edge_type_filters_sampling(simple_graph: HeteroGraph) -> None:
@@ -116,7 +118,7 @@ def test_target_edge_type_unknown_raises(simple_graph: HeteroGraph) -> None:
         sample_size=10,
         target_edge_type=target,
     )
-    with pytest.raises(ValueError, match="not found in graph"):
+    with pytest.raises(GraphSchemaError, match="not found in graph"):
         build_triple_sampler(simple_graph, config)
 
 
@@ -125,7 +127,7 @@ def test_weighted_sampler_wrong_weight_count(simple_graph: HeteroGraph) -> None:
         sample_size=5, strategy=SamplingStrategy.RELATION_PROPORTIONAL
     )
     wrong_weights = torch.ones(99)
-    with pytest.raises(ValueError, match="Weights must match"):
+    with pytest.raises(ConfigurationError, match="Weights must match"):
         WeightedTripleSampler(simple_graph, config, wrong_weights)
 
 

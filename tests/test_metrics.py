@@ -1,52 +1,17 @@
 """Tests for RuleEvaluator."""
 
 import logging
-import warnings
 
 import pytest
-import torch
 
+from anyburl.exceptions import GraphSchemaError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleEvaluator, RuleMetrics, aggregate_confidence
 from anyburl.rule import Atom, Rule, RuleConfig, RuleType, Term
+from tests.rules import ac2_born_in, lives_in, object_grounded, subject_grounded
 
-
-def _csr(pairs: list[tuple[int, int]], *, shape: tuple[int, int]) -> torch.Tensor:
-    """Build a bool-valued CSR tensor from ``(row, col)`` pairs."""
-    if not pairs:
-        indices = torch.empty((2, 0), dtype=torch.long)
-    else:
-        indices = torch.tensor(pairs, dtype=torch.long).t()
-    values = torch.ones(indices.shape[1], dtype=torch.float32)
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
-        return torch.sparse_coo_tensor(indices, values, size=shape).to_sparse_csr()
-
-
-def _make_ac1_rule_subject_grounded() -> Rule:
-    """Create: lives_in(person:0, Y) :- born_in(X, Z0), near(Z0, Y).
-
-    X is a free variable in the body. The evaluator pins X to person:0
-    (the head constant) when computing the forward chain.
-    """
-    head = Atom(
-        relation="lives_in",
-        subject=Term.constant(0, node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    return Rule(head=head, body=body, rule_type=RuleType.AC1)
+PERMISSIVE = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
+WARNING_TEXT = "not comparable across rule types"
 
 
 @pytest.mark.parametrize(
@@ -115,9 +80,7 @@ def test_evaluate_cyclic_hand_computed(
     Intersection: (3,0) = 1 support.
     confidence = 1/4 = 0.25, head_coverage = 1/4 = 0.25.
     """
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
-    metrics = evaluator.evaluate(cyclic_rule)
+    metrics = RuleEvaluator(evaluator_graph, PERMISSIVE).evaluate(cyclic_rule)
 
     assert metrics.num_predictions == 4
     assert metrics.support == 1
@@ -126,74 +89,40 @@ def test_evaluate_cyclic_hand_computed(
 
 
 def test_evaluate_ac1_rule(evaluator_graph: HeteroGraph) -> None:
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
-    rule = _make_ac1_rule_subject_grounded()
-    metrics = evaluator.evaluate(rule)
+    metrics = RuleEvaluator(evaluator_graph, PERMISSIVE).evaluate(subject_grounded(0))
 
-    assert isinstance(metrics, RuleMetrics)
     assert metrics.num_predictions == 1
     assert metrics.support == 0
     assert metrics.confidence == 0.0
 
 
-def test_evaluate_ac2_subject_connected(evaluator_graph: HeteroGraph) -> None:
-    """Evaluate AC2 rule: lives_in(X, Y) :- born_in(X, Z0).
-
-    born_in has 4 persons with edges -> connected_count=4.
-    disconnected type=city, 3 cities -> num_predictions=12.
-    All 4 lives_in triples have subjects in connected set -> support=4.
-    confidence=4/12=1/3, head_coverage=4/4=1.0.
-    """
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
-
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
+@pytest.mark.parametrize(
+    "rule",
+    [
+        ac2_born_in(),
+        Rule(
+            head=lives_in(
+                Term.variable("X", node_type="person"),
+                Term.variable("Y", node_type="city"),
+            ),
+            body=(
+                Atom(
+                    relation="near",
+                    subject=Term.variable("Z0", node_type="city"),
+                    object_=Term.variable("Y", node_type="city"),
+                ),
+            ),
+            rule_type=RuleType.AC2,
         ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.AC2)
-    metrics = evaluator.evaluate(rule)
+    ],
+    ids=["subject_connected", "object_connected"],
+)
+def test_evaluate_ac2(evaluator_graph: HeteroGraph, rule: Rule) -> None:
+    """The connected side reaches every entity of its type: 4 x 3 predictions.
 
-    assert metrics.num_predictions == 12
-    assert metrics.support == 4
-    assert metrics.confidence == pytest.approx(1.0 / 3.0)
-    assert metrics.head_coverage == pytest.approx(1.0)
-
-
-def test_evaluate_ac2_object_connected(evaluator_graph: HeteroGraph) -> None:
-    """Evaluate AC2 rule: lives_in(X, Y) :- near(Z0, Y).
-
-    near targets all 3 cities -> connected_count=3.
-    disconnected type=person, 4 persons -> num_predictions=12.
-    All 4 lives_in triples have targets in connected set -> support=4.
-    confidence=4/12=1/3, head_coverage=4/4=1.0.
+    All 4 ``lives_in`` triples have a connected endpoint, so support is 4.
     """
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
-
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.AC2)
-    metrics = evaluator.evaluate(rule)
+    metrics = RuleEvaluator(evaluator_graph, PERMISSIVE).evaluate(rule)
 
     assert metrics.num_predictions == 12
     assert metrics.support == 4
@@ -207,7 +136,7 @@ def test_evaluate_batch_filters(
 ) -> None:
     config = RuleConfig(min_support=1, min_confidence=0.1, min_head_coverage=0.1)
     evaluator = RuleEvaluator(evaluator_graph, config)
-    ac1_rule = _make_ac1_rule_subject_grounded()
+    ac1_rule = subject_grounded(0)
 
     results = evaluator.evaluate_batch([cyclic_rule, ac1_rule])
 
@@ -220,8 +149,7 @@ def test_evaluate_batch_max_results(
     evaluator_graph: HeteroGraph,
     cyclic_rule: Rule,
 ) -> None:
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
+    evaluator = RuleEvaluator(evaluator_graph, PERMISSIVE)
 
     results = evaluator.evaluate_batch(
         [cyclic_rule, cyclic_rule, cyclic_rule], max_results=1
@@ -229,66 +157,48 @@ def test_evaluate_batch_max_results(
     assert len(results) == 1
 
 
-def _make_ac1_rule_object_grounded() -> Rule:
-    """Create: lives_in(X, city:1) :- born_in(X, Z0), near(Z0, Y).
-
-    Y is a free variable in the body. The evaluator pins Y to city:1
-    (the head constant) via the backward/transposed chain.
-    """
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.constant(1, node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    return Rule(head=head, body=body, rule_type=RuleType.AC1)
-
-
-def test_grouped_batch_matches_single_evaluate(
+def test_batch_evaluation_matches_single_evaluation(
     evaluator_graph: HeteroGraph,
     cyclic_rule: Rule,
 ) -> None:
-    """Grouped batch evaluation must equal per-rule evaluate() exactly.
+    evaluator = RuleEvaluator(evaluator_graph, PERMISSIVE)
+    rules = [cyclic_rule, subject_grounded(3), object_grounded(0)]
 
-    Covers cyclic, subject-grounded AC1 (forward chain), and
-    object-grounded AC1 (transposed chain) rule types.
-    """
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
-    rules = [
-        cyclic_rule,
-        _make_ac1_rule_subject_grounded(),
-        _make_ac1_rule_object_grounded(),
-    ]
+    batch = dict(evaluator.evaluate_batch(rules))
 
-    grouped = evaluator._compute_all_metrics(rules)
+    assert batch == {rule: evaluator.evaluate(rule) for rule in rules}
 
-    for rule in rules:
-        assert grouped[rule] == evaluator.evaluate(rule)
+
+def test_unknown_edge_type_raises(evaluator_graph: HeteroGraph) -> None:
+    rule = Rule(
+        head=lives_in(
+            Term.variable("X", node_type="person"), Term.variable("Y", node_type="city")
+        ),
+        body=(
+            Atom(
+                relation="visited",
+                subject=Term.variable("X", node_type="person"),
+                object_=Term.variable("Y", node_type="city"),
+            ),
+        ),
+        rule_type=RuleType.CYCLIC,
+    )
+
+    with pytest.raises(GraphSchemaError, match="No edge type matches"):
+        RuleEvaluator(evaluator_graph, PERMISSIVE).evaluate(rule)
 
 
 def test_warns_when_head_coverage_alone_eliminates_a_type(
     evaluator_graph: HeteroGraph, cyclic_rule: Rule, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The DBLP failure mode: rules good on support and confidence, floored out."""
+    """Rules clearing support and confidence but not head coverage."""
     config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.99)
     evaluator = RuleEvaluator(evaluator_graph, config)
 
     with caplog.at_level(logging.WARNING, logger="anyburl"):
         evaluator.evaluate_batch([cyclic_rule])
 
-    assert "not comparable across rule types" in caplog.text
+    assert WARNING_TEXT in caplog.text
 
 
 def test_does_not_warn_when_rules_are_simply_poor(
@@ -301,16 +211,15 @@ def test_does_not_warn_when_rules_are_simply_poor(
     with caplog.at_level(logging.WARNING, logger="anyburl"):
         evaluator.evaluate_batch([cyclic_rule])
 
-    assert "not comparable across rule types" not in caplog.text
+    assert WARNING_TEXT not in caplog.text
 
 
 def test_does_not_warn_without_a_head_coverage_floor(
     evaluator_graph: HeteroGraph, cyclic_rule: Rule, caplog: pytest.LogCaptureFixture
 ) -> None:
-    config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
-    evaluator = RuleEvaluator(evaluator_graph, config)
+    evaluator = RuleEvaluator(evaluator_graph, PERMISSIVE)
 
     with caplog.at_level(logging.WARNING, logger="anyburl"):
         evaluator.evaluate_batch([cyclic_rule])
 
-    assert "not comparable across rule types" not in caplog.text
+    assert WARNING_TEXT not in caplog.text

@@ -58,9 +58,7 @@ def test_numba_paths_are_structurally_valid(simple_graph: HeteroGraph) -> None:
 
 
 def test_numba_matches_reference_when_saturated(simple_graph: HeteroGraph) -> None:
-    # Short walks on a tiny graph: many attempts saturate every possible
-    # path, so both engines must discover the identical set despite
-    # using different random number generators.
+    """Enough attempts on a tiny graph find every path, whatever the RNG."""
     config = WalkConfig(min_length=2, max_length=3, max_attempts=5000, seed=42)
     triple = Triple(0, 1, "person", "city", "lives_in")
 
@@ -103,8 +101,7 @@ def test_numba_paths_reach_tail(simple_graph: HeteroGraph) -> None:
 
 
 def test_numba_returns_empty_on_dead_end() -> None:
-    # city:1 has no outgoing edges back to a person, so a person->person
-    # target can never be completed through it.
+    """City 1 has no edge back to a person, so no person-to-person walk ends."""
     data = HeteroData()
     data["person"].num_nodes = 2
     data["city"].num_nodes = 2

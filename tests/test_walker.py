@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.exceptions import ConfigurationError
 from anyburl.factories import build_walk_engine
 from anyburl.graph import HeteroGraph
 from anyburl.sampler import Triple
@@ -39,7 +40,7 @@ def test_walk_config_invalid_params(
     kwargs: dict[str, int],
     match: str,
 ) -> None:
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ConfigurationError, match=match):
         WalkConfig(**kwargs)  # type: ignore[arg-type]
 
 

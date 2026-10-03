@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.exceptions import ConfigurationError, GraphSchemaError
 from anyburl.split import (
     InverseEdgeHandling,
     SplitConfig,
@@ -94,20 +95,20 @@ def test_split_is_deterministic_for_a_seed(mirrored_data: HeteroData) -> None:
 def test_unknown_target_edge_type_raises(mirrored_data: HeteroData) -> None:
     config = SplitConfig(target_edge_type=("author", "cites", "paper"))
 
-    with pytest.raises(ValueError, match="not in graph"):
+    with pytest.raises(GraphSchemaError, match="not in graph"):
         split_target_edges(mirrored_data, config)
 
 
 def test_fraction_holding_out_nothing_raises(mirrored_data: HeteroData) -> None:
     config = SplitConfig(target_edge_type=TARGET, test_fraction=0.01)
 
-    with pytest.raises(ValueError, match="holds out 0 of"):
+    with pytest.raises(ConfigurationError, match="holds out 0 of"):
         split_target_edges(mirrored_data, config)
 
 
 @pytest.mark.parametrize("fraction", [0.0, 1.0, -0.1, 1.5])
 def test_invalid_test_fraction_raises(fraction: float) -> None:
-    with pytest.raises(ValueError, match="test_fraction must be in"):
+    with pytest.raises(ConfigurationError, match="test_fraction must be in"):
         SplitConfig(target_edge_type=TARGET, test_fraction=fraction)
 
 
@@ -126,7 +127,7 @@ def test_edge_parallel_attribute_on_target_raises(mirrored_data: HeteroData) -> 
     """Filtering only edge_index would leave edge_attr misaligned."""
     mirrored_data[TARGET].edge_attr = torch.ones(NUM_EDGES, 1)
 
-    with pytest.raises(ValueError, match="edge-parallel attributes"):
+    with pytest.raises(GraphSchemaError, match="edge-parallel attributes"):
         split_target_edges(
             mirrored_data, SplitConfig(target_edge_type=TARGET, test_fraction=0.3)
         )
@@ -136,7 +137,7 @@ def test_edge_parallel_attribute_on_inverse_raises(mirrored_data: HeteroData) ->
     """The mirrored inverse is filtered too, so it must be checked as well."""
     mirrored_data[INVERSE].edge_attr = torch.ones(NUM_EDGES, 1)
 
-    with pytest.raises(ValueError, match="edge-parallel attributes"):
+    with pytest.raises(GraphSchemaError, match="edge-parallel attributes"):
         split_target_edges(
             mirrored_data, SplitConfig(target_edge_type=TARGET, test_fraction=0.3)
         )
@@ -165,7 +166,7 @@ RENAMED_INVERSE = ("paper", "authored_by", "author")
 
 @pytest.fixture
 def renamed_inverse_data() -> HeteroData:
-    """Inverse edges stored under a DIFFERENT relation name, as BIOKG does."""
+    """Inverse edges stored under a different relation name."""
     data = HeteroData()
     data["author"].num_nodes = NUM_EDGES
     data["paper"].num_nodes = NUM_EDGES
@@ -218,13 +219,13 @@ def test_explicit_inverse_absent_from_graph_raises(
         inverse_edge_type=("paper", "typo", "author"),
     )
 
-    with pytest.raises(ValueError, match=r"inverse_edge_type .* not in graph"):
+    with pytest.raises(GraphSchemaError, match=r"inverse_edge_type .* not in graph"):
         split_target_edges(mirrored_data, config)
 
 
 def test_explicit_inverse_with_keep_raises() -> None:
     """Naming an inverse to remove while asking to keep it is contradictory."""
-    with pytest.raises(ValueError, match="contradict"):
+    with pytest.raises(ConfigurationError, match="contradict"):
         SplitConfig(
             target_edge_type=TARGET,
             inverse_edge_type=RENAMED_INVERSE,

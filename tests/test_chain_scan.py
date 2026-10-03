@@ -6,6 +6,7 @@ import torch
 from torch_geometric.data import HeteroData
 
 from anyburl.chain import ChainScanner, build_csr_tables
+from anyburl.exceptions import InvalidRuleError
 from anyburl.graph import EdgeTypeTuple, HeteroGraph
 
 BORN_IN = ("person", "born_in", "city")
@@ -93,8 +94,6 @@ def test_repeated_results_are_deterministic(evaluator_graph: HeteroGraph) -> Non
     assert first == second
 
 
-# --- the failure mode a per-row stamp would cause ---------------------------
-
 SELF = ("a", "self", "a")
 CROSS = ("a", "cross", "b")
 HEAD_AB = ("a", "head", "b")
@@ -102,7 +101,7 @@ HEAD_AB = ("a", "head", "b")
 
 @pytest.fixture
 def repeated_type_graph() -> HeteroGraph:
-    """Node type ``a`` recurs at several chain levels, as BIOKG's worst chain does."""
+    """Node type ``a`` recurs at several levels of one chain."""
     data = HeteroData()
     data["a"].num_nodes = 6
     data["b"].num_nodes = 4
@@ -175,9 +174,6 @@ def test_empty_row_selection_returns_empty(evaluator_graph: HeteroGraph) -> None
     assert support.size == 0
 
 
-# --- randomised parity sweep ------------------------------------------------
-
-
 def _random_graph(rng: np.random.Generator) -> tuple[HeteroGraph, list[EdgeTypeTuple]]:
     """Build a small random heterogeneous graph and list its edge types."""
     node_types = ["t0", "t1", "t2"]
@@ -243,9 +239,6 @@ def test_randomised_parity_against_the_oracle() -> None:
     assert compared > 50, f"sweep only compared {compared} cases"
 
 
-# --- table layout and validation --------------------------------------------
-
-
 def test_edge_ids_follow_table_order(evaluator_graph: HeteroGraph) -> None:
     tables = build_csr_tables(evaluator_graph)
 
@@ -265,26 +258,26 @@ def test_block_offsets_cover_the_concatenation(evaluator_graph: HeteroGraph) -> 
 
 
 def test_rejects_an_empty_chain(evaluator_graph: HeteroGraph) -> None:
-    with pytest.raises(ValueError, match="at least one edge type"):
+    with pytest.raises(InvalidRuleError, match="at least one edge type"):
         ChainScanner(evaluator_graph).scan_all_rows((), LIVES_IN)
 
 
 def test_rejects_a_chain_that_does_not_join(evaluator_graph: HeteroGraph) -> None:
-    with pytest.raises(ValueError, match="does not join"):
+    with pytest.raises(InvalidRuleError, match="does not join"):
         ChainScanner(evaluator_graph).scan_all_rows((NEAR, BORN_IN), LIVES_IN)
 
 
 def test_rejects_a_chain_whose_start_differs_from_the_head(
     evaluator_graph: HeteroGraph,
 ) -> None:
-    with pytest.raises(ValueError, match="chain starts at"):
+    with pytest.raises(InvalidRuleError, match="chain starts at"):
         ChainScanner(evaluator_graph).scan_all_rows((NEAR,), LIVES_IN)
 
 
 def test_rejects_a_chain_whose_end_differs_from_the_head(
     repeated_type_graph: HeteroGraph,
 ) -> None:
-    with pytest.raises(ValueError, match="chain ends at"):
+    with pytest.raises(InvalidRuleError, match="chain ends at"):
         ChainScanner(repeated_type_graph).scan_all_rows((SELF,), HEAD_AB)
 
 

@@ -2,6 +2,7 @@
 
 import pytest
 
+from anyburl.exceptions import ConfigurationError, InvalidRuleError
 from anyburl.rule import (
     Atom,
     Rule,
@@ -12,6 +13,18 @@ from anyburl.rule import (
     Term,
     TermKind,
 )
+
+X_PERSON = Term.variable("X", node_type="person")
+Y_CITY = Term.variable("Y", node_type="city")
+Z0_CITY = Term.variable("Z0", node_type="city")
+PERSON_0 = Term.constant(0, node_type="person")
+
+
+def _atom(relation: str, subject: Term, object_: Term) -> Atom:
+    return Atom(relation=relation, subject=subject, object_=object_)
+
+
+LIVES_IN_XY = _atom("lives_in", X_PERSON, Y_CITY)
 
 
 def test_term_variable_kind() -> None:
@@ -50,7 +63,7 @@ def test_term_invalid_combination_raises(
     kwargs: dict[str, object],
     match: str,
 ) -> None:
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(InvalidRuleError, match=match):
         Term(kind=kind, node_type="person", **kwargs)  # type: ignore[arg-type]
 
 
@@ -163,7 +176,7 @@ def test_rule_str_contains_key_parts() -> None:
     ],
 )
 def test_rule_config_invalid(kwargs: dict[str, float], match: str) -> None:
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ConfigurationError, match=match):
         RuleConfig(**kwargs)  # type: ignore[arg-type]
 
 
@@ -174,63 +187,31 @@ def test_rule_config_valid() -> None:
     assert config.min_head_coverage == 0.1
 
 
-def test_classify_rule_cyclic() -> None:
-    head = Atom(
-        relation="r",
-        subject=Term.variable("X", node_type="A"),
-        object_=Term.variable("Y", node_type="B"),
-    )
-    body = (
-        Atom(
-            relation="r1",
-            subject=Term.variable("X", node_type="A"),
-            object_=Term.variable("Z", node_type="C"),
+@pytest.mark.parametrize(
+    ("head", "body", "expected"),
+    [
+        (
+            LIVES_IN_XY,
+            (_atom("born_in", X_PERSON, Z0_CITY), _atom("near", Z0_CITY, Y_CITY)),
+            RuleType.CYCLIC,
         ),
-        Atom(
-            relation="r2",
-            subject=Term.variable("Z", node_type="C"),
-            object_=Term.variable("Y", node_type="B"),
+        (
+            _atom("lives_in", PERSON_0, Y_CITY),
+            (_atom("born_in", X_PERSON, Y_CITY),),
+            RuleType.AC1,
         ),
-    )
-    assert RuleGeneralizer.classify_rule(head, body) == RuleType.CYCLIC
-
-
-def test_classify_rule_ac1_subject_constant() -> None:
-    head = Atom(
-        relation="r",
-        subject=Term.constant(0, node_type="A"),
-        object_=Term.variable("Y", node_type="B"),
-    )
-    body = (
-        Atom(
-            relation="r1",
-            subject=Term.variable("X", node_type="A"),
-            object_=Term.variable("Y", node_type="B"),
-        ),
-    )
-    assert RuleGeneralizer.classify_rule(head, body) == RuleType.AC1
-
-
-def test_classify_rule_ac2_disconnected_head_var() -> None:
-    head = Atom(
-        relation="r",
-        subject=Term.variable("X", node_type="A"),
-        object_=Term.variable("Y", node_type="B"),
-    )
-    body = (
-        Atom(
-            relation="r1",
-            subject=Term.variable("X", node_type="A"),
-            object_=Term.variable("Z", node_type="C"),
-        ),
-    )
-    assert RuleGeneralizer.classify_rule(head, body) == RuleType.AC2
+        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), RuleType.AC2),
+    ],
+    ids=["cyclic", "ac1", "ac2"],
+)
+def test_classify_rule(head: Atom, body: tuple[Atom, ...], expected: RuleType) -> None:
+    assert RuleGeneralizer.classify_rule(head, body) is expected
 
 
 def test_generalize_empty_path_raises() -> None:
     config = RuleConfig()
     generalizer = RuleGeneralizer(config)
-    with pytest.raises(ValueError, match="at least one step"):
+    with pytest.raises(InvalidRuleError, match="at least one step"):
         generalizer.generalize([], target_relation="r", head_type="A", tail_type="B")
 
 
@@ -269,69 +250,20 @@ def test_generalize_1step_same_relation_filters_tautological() -> None:
     assert len(rules) == 2
 
 
-def test_tautological_rule_detected() -> None:
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="lives_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
-    assert rule.is_tautological is True
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ((LIVES_IN_XY,), True),
+        ((_atom("born_in", X_PERSON, Z0_CITY), LIVES_IN_XY), True),
+        ((_atom("born_in", X_PERSON, Z0_CITY), _atom("near", Z0_CITY, Y_CITY)), False),
+        ((_atom("lives_in", X_PERSON, Z0_CITY), _atom("near", Z0_CITY, Y_CITY)), False),
+    ],
+    ids=["head_as_body", "head_among_body", "different_relations", "same_edge_type"],
+)
+def test_is_tautological(body: tuple[Atom, ...], expected: bool) -> None:
+    rule = Rule(head=LIVES_IN_XY, body=body, rule_type=RuleType.CYCLIC)
 
-
-def test_non_tautological_rule(cyclic_rule: Rule) -> None:
-    assert cyclic_rule.is_tautological is False
-
-
-def test_same_edge_type_different_variables_not_tautological() -> None:
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="lives_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
-    assert rule.is_tautological is False
-
-
-def test_tautological_among_multiple_body_atoms() -> None:
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="lives_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
-    assert rule.is_tautological is True
+    assert rule.is_tautological is expected
 
 
 def test_generalize_keeps_same_edge_type_different_variables() -> None:
@@ -451,5 +383,5 @@ def test_per_type_override_replaces_the_defaults() -> None:
 
 
 def test_invalid_threshold_override_is_rejected() -> None:
-    with pytest.raises(ValueError, match="min_confidence must be in"):
+    with pytest.raises(ConfigurationError, match="min_confidence must be in"):
         RuleThresholds(min_confidence=1.5)

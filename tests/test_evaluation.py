@@ -11,16 +11,10 @@ from anyburl.evaluation import (
     rank_with_ties,
 )
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleMetrics
 from anyburl.prediction import RulePredictor
 from anyburl.rule import Rule
 from anyburl.sampler import Triple
-
-
-def _metrics(*, confidence: float) -> RuleMetrics:
-    return RuleMetrics(
-        support=1, confidence=confidence, head_coverage=0.33, num_predictions=3
-    )
+from tests.rules import metrics_with
 
 
 def test_perfect_mrr(
@@ -28,7 +22,7 @@ def test_perfect_mrr(
     cyclic_rule: Rule,
 ) -> None:
     """With a perfect rule, all triples should rank 1 -> MRR = 1.0."""
-    results = [(cyclic_rule, _metrics(confidence=0.9))]
+    results = [(cyclic_rule, metrics_with(confidence=0.9))]
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3, 10), filter_known=True)
@@ -57,7 +51,7 @@ def test_perfect_hits_at_k(
     cyclic_rule: Rule,
 ) -> None:
     """Perfect prediction should give Hits@K = 1.0 for all K."""
-    results = [(cyclic_rule, _metrics(confidence=0.9))]
+    results = [(cyclic_rule, metrics_with(confidence=0.9))]
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3), filter_known=True)
@@ -91,7 +85,7 @@ def test_filtered_excludes_known_triples(
     cyclic_rule: Rule,
 ) -> None:
     """Filtered setting should not count known triples as competitors."""
-    results = [(cyclic_rule, _metrics(confidence=0.9))]
+    results = [(cyclic_rule, metrics_with(confidence=0.9))]
     predictor = RulePredictor(perfect_eval_graph, results)
 
     filtered_config = EvaluationConfig(k_values=(1,), filter_known=True)
@@ -123,7 +117,7 @@ def test_averaged_metrics(
     cyclic_rule: Rule,
 ) -> None:
     """Metrics should be averaged across all queries."""
-    results = [(cyclic_rule, _metrics(confidence=0.9))]
+    results = [(cyclic_rule, metrics_with(confidence=0.9))]
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3), filter_known=True)
@@ -164,7 +158,7 @@ def test_empty_triples_returns_zeros(
     cyclic_rule: Rule,
 ) -> None:
     """Empty test set should return zero metrics."""
-    results = [(cyclic_rule, _metrics(confidence=0.9))]
+    results = [(cyclic_rule, metrics_with(confidence=0.9))]
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3, 10), filter_known=True)

@@ -10,6 +10,7 @@ from anyburl.anytime import (
     MiningStages,
     PathWalker,
 )
+from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleEvaluator
 from anyburl.rule import PathStep, RuleConfig, RuleGeneralizer
@@ -165,5 +166,5 @@ def test_report_describes_the_run(
     ],
 )
 def test_invalid_config_is_rejected(kwargs: dict[str, object], message: str) -> None:
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ConfigurationError, match=message):
         AnytimeConfig(**kwargs)  # type: ignore[arg-type]

@@ -5,7 +5,8 @@ import torch
 from torch_geometric.data import HeteroData
 
 from anyburl.graph import HeteroGraph
-from anyburl.rule import Atom, Rule, RuleType, Term
+from anyburl.rule import Rule
+from tests.rules import cyclic_born_in_near
 
 
 @pytest.fixture
@@ -115,21 +116,4 @@ def perfect_eval_graph() -> HeteroGraph:
 @pytest.fixture
 def cyclic_rule() -> Rule:
     """Create: lives_in(X, Y) :- born_in(X, Z0), near(Z0, Y)."""
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    return Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
+    return cyclic_born_in_near()
