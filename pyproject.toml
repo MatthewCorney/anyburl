@@ -6,13 +6,13 @@ authors = [
     {name = "MatthewCorney", email = "Matthew_corney@yahoo.co.uk"}
 ]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.15"
 dependencies = [
-    "torch>=2.0.0",
+    "torch (>=2.10.0,<2.11.0)",
     "torch-geometric>=2.4.0",
-    "pandas (>=3.0.0,<4.0.0)",
     "numba (>=0.67.0,<0.68.0)",
     "numpy (>=2.0,<3.0)",
+    "tqdm (>=4.0,<5.0)",
 ]
 
 [build-system]
