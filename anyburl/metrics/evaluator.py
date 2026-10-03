@@ -1,140 +1,27 @@
-"""Rule quality evaluation: support, confidence, and head coverage."""
+"""Rule quality evaluation by counting body-chain groundings."""
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import assert_never
 
 import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm
 
-from ._chain_scan import ChainScanner
-from ._logging import get_logger
-from .exceptions import GraphSchemaError
-from .graph import EdgeTypeTuple, HeteroGraph
-from .rule import Atom, Rule, RuleConfig, RuleType, TermKind
+from .._logging import get_logger
+from ..chain import ChainScanner
+from ..exceptions import GraphSchemaError
+from ..graph import EdgeTypeTuple, HeteroGraph
+from ..rule import Atom, Rule, RuleConfig, RuleType, TermKind
+from .coverage_warning import HeadCoverageWarning
+from .rule_metrics import NO_PREDICTIONS, RuleMetrics, metrics_from_counts
+
+__all__ = ["BodySignature", "RuleEvaluator"]
 
 BodySignature = tuple[EdgeTypeTuple, ...]
 """Ordered edge types of a rule body; shared by rules with the same chain."""
 
 logger = get_logger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class RuleMetrics:
-    """Computed quality metrics for a single rule.
-
-    Parameters
-    ----------
-    support : int
-        Number of known triples correctly predicted by the rule.
-    confidence : float
-        ``support / num_predictions``, in ``[0.0, 1.0]``.
-    head_coverage : float
-        ``support / total_triples_with_head_relation``, in ``[0.0, 1.0]``.
-    num_predictions : int
-        Total predictions made by the rule (correct + incorrect).
-    """
-
-    support: int
-    confidence: float
-    head_coverage: float
-    num_predictions: int
-
-    @property
-    def is_trivial(self) -> bool:
-        """Return ``True`` if the rule makes zero predictions."""
-        return self.num_predictions == 0
-
-    def passes_thresholds(
-        self,
-        *,
-        min_support: int,
-        min_confidence: float,
-        min_head_coverage: float,
-    ) -> bool:
-        """Check whether this rule meets all quality thresholds.
-
-        Parameters
-        ----------
-        min_support : int
-            Minimum required support.
-        min_confidence : float
-            Minimum required confidence.
-        min_head_coverage : float
-            Minimum required head coverage.
-
-        Returns
-        -------
-        bool
-            ``True`` if all thresholds are met.
-        """
-        return (
-            self.support >= min_support
-            and self.confidence >= min_confidence
-            and self.head_coverage >= min_head_coverage
-        )
-
-
-NO_PREDICTIONS: RuleMetrics = RuleMetrics(
-    support=0, confidence=0.0, head_coverage=0.0, num_predictions=0
-)
-"""Metrics of a rule whose body has no groundings."""
-
-
-def aggregate_confidence(confidences: Sequence[float]) -> float:
-    """Aggregate confidences from multiple rules via noisy-or.
-
-    Computes ``1 - prod(1 - c_i)``, treating each rule as an independent
-    chance of the triple being true.
-
-    Parameters
-    ----------
-    confidences : Sequence[float]
-        Individual rule confidences, each in ``[0.0, 1.0]``.
-
-    Returns
-    -------
-    float
-        Aggregated confidence in ``[0.0, 1.0]``; ``0.0`` for an empty
-        sequence.
-    """
-    result = 1.0
-    for confidence in confidences:
-        result *= 1.0 - confidence
-    return 1.0 - result
-
-
-def _metrics_from_counts(
-    num_predictions: int,
-    support: int,
-    total_head_triples: int,
-) -> RuleMetrics:
-    """Build metrics from a rule's prediction and support counts.
-
-    Parameters
-    ----------
-    num_predictions : int
-        Distinct pairs the rule predicts.
-    support : int
-        How many of those the head relation already contains.
-    total_head_triples : int
-        Triples carrying the head relation, for head coverage.
-
-    Returns
-    -------
-    RuleMetrics
-        Computed metrics.
-    """
-    if num_predictions == 0:
-        return NO_PREDICTIONS
-    return RuleMetrics(
-        support=support,
-        confidence=support / num_predictions,
-        head_coverage=support / total_head_triples if total_head_triples > 0 else 0.0,
-        num_predictions=num_predictions,
-    )
 
 
 class RuleEvaluator:
@@ -156,7 +43,7 @@ class RuleEvaluator:
         self._graph = graph
         self._config = config
         self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
-        self._warned_types: set[RuleType] = set()
+        self._coverage_warning = HeadCoverageWarning(config)
         self._scanner = ChainScanner(graph)
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
@@ -214,7 +101,7 @@ class RuleEvaluator:
         logger.debug(
             "Evaluated %d rules, %d passed thresholds", len(rules), len(results)
         )
-        self._warn_on_eliminated_types(rules, metrics_by_rule)
+        self._coverage_warning.check(rules, metrics_by_rule)
         return results
 
     def _passes(self, rule: Rule, metrics: RuleMetrics) -> bool:
@@ -225,70 +112,6 @@ class RuleEvaluator:
             min_confidence=thresholds.min_confidence,
             min_head_coverage=thresholds.min_head_coverage,
         )
-
-    def _warn_on_eliminated_types(
-        self,
-        rules: Sequence[Rule],
-        metrics_by_rule: dict[Rule, RuleMetrics],
-    ) -> None:
-        """Warn when head coverage alone removes every rule of a type.
-
-        Only rules that clear support and confidence are considered, so a
-        type of uniformly poor rules is not reported.
-
-        Parameters
-        ----------
-        rules : Sequence[Rule]
-            The rules that were evaluated.
-        metrics_by_rule : dict[Rule, RuleMetrics]
-            Their computed metrics.
-        """
-        by_type: dict[RuleType, list[RuleMetrics]] = defaultdict(list)
-        for rule in rules:
-            by_type[rule.rule_type].append(metrics_by_rule[rule])
-
-        for rule_type, metrics in by_type.items():
-            if rule_type in self._warned_types:
-                continue
-            eliminated = self._eliminated_by_head_coverage(rule_type, metrics)
-            if not eliminated:
-                continue
-            self._warned_types.add(rule_type)
-            logger.warning(
-                "All %d %s rules that met support and confidence were removed "
-                "by min_head_coverage=%.5f; the best any of them reached was "
-                "%.5f. Head coverage is not comparable across rule types -- "
-                "give this one its own floor via RuleConfig.per_type.",
-                len(eliminated),
-                rule_type.value,
-                self._config.thresholds_for(rule_type).min_head_coverage,
-                max(m.head_coverage for m in eliminated),
-            )
-
-    def _eliminated_by_head_coverage(
-        self,
-        rule_type: RuleType,
-        metrics: Sequence[RuleMetrics],
-    ) -> list[RuleMetrics]:
-        """Return the rules of a type that failed only on head coverage.
-
-        Returns an empty list unless every rule clearing support and
-        confidence then fails the head coverage floor.
-        """
-        thresholds = self._config.thresholds_for(rule_type)
-        if thresholds.min_head_coverage <= 0.0:
-            return []
-        otherwise_eligible = [
-            m
-            for m in metrics
-            if m.support >= thresholds.min_support
-            and m.confidence >= thresholds.min_confidence
-        ]
-        if any(
-            m.head_coverage >= thresholds.min_head_coverage for m in otherwise_eligible
-        ):
-            return []
-        return otherwise_eligible
 
     def _compute_all_metrics(
         self,
@@ -389,7 +212,7 @@ class RuleEvaluator:
             )
             total_head_triples = self._graph.edge_count(head_et)
             for position, entity_id in enumerate(entities):
-                metrics = _metrics_from_counts(
+                metrics = metrics_from_counts(
                     int(predictions[position]),
                     int(support[position]),
                     total_head_triples,
@@ -416,7 +239,7 @@ class RuleEvaluator:
         num_predictions, support = self._scanner.scan_all_rows(
             self._body_signature(rule), head_et
         )
-        return _metrics_from_counts(
+        return metrics_from_counts(
             num_predictions, support, self._graph.edge_count(head_et)
         )
 
@@ -462,7 +285,7 @@ class RuleEvaluator:
             disconnected_type
         )
         support = int(connected[known_connected.numpy()].sum())
-        return _metrics_from_counts(
+        return metrics_from_counts(
             num_predictions, support, self._graph.edge_count(head_et)
         )
 

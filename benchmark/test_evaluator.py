@@ -22,7 +22,7 @@ PERMISSIVE_CONFIG = RuleConfig(
     ids=["cyclic", "ac1", "ac2"],
 )
 def test_evaluate_rule(benchmark, eval_graph, rule_fn):
-    """Benchmark evaluating a single rule (CYCLIC / AC1 / AC2) on small and medium graphs."""
+    """Benchmark evaluating a single cyclic, AC1 or AC2 rule."""
     evaluator = RuleEvaluator(eval_graph, PERMISSIVE_CONFIG)
     benchmark(evaluator.evaluate, rule_fn())
 

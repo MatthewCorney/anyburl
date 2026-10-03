@@ -285,7 +285,7 @@ def test_warns_when_head_coverage_alone_eliminates_a_type(
     config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.99)
     evaluator = RuleEvaluator(evaluator_graph, config)
 
-    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+    with caplog.at_level(logging.WARNING, logger="anyburl"):
         evaluator.evaluate_batch([cyclic_rule])
 
     assert "not comparable across rule types" in caplog.text
@@ -298,7 +298,7 @@ def test_does_not_warn_when_rules_are_simply_poor(
     config = RuleConfig(min_support=10_000, min_confidence=0.0, min_head_coverage=0.99)
     evaluator = RuleEvaluator(evaluator_graph, config)
 
-    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+    with caplog.at_level(logging.WARNING, logger="anyburl"):
         evaluator.evaluate_batch([cyclic_rule])
 
     assert "not comparable across rule types" not in caplog.text
@@ -310,7 +310,7 @@ def test_does_not_warn_without_a_head_coverage_floor(
     config = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
     evaluator = RuleEvaluator(evaluator_graph, config)
 
-    with caplog.at_level(logging.WARNING, logger="anyburl.metrics"):
+    with caplog.at_level(logging.WARNING, logger="anyburl"):
         evaluator.evaluate_batch([cyclic_rule])
 
     assert "not comparable across rule types" not in caplog.text

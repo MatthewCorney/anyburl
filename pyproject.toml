@@ -62,9 +62,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "D", "ARG", "PLR2004"]
-"anyburl/scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901"]
 "scripts/**/*.py" = ["S101", "S311", "D", "ARG", "PLR2004", "PLR0912", "PLR0913", "PLR0915", "T20", "N806", "C901", "B905", "E501"]
-"anyburl/_chain_kernel.py" = [
+"anyburl/chain/_kernel.py" = [
     "PLR0913",
     "PLR0917",
     "PLR0912",
@@ -92,20 +91,11 @@ warn_unused_configs = true
 show_error_codes = true
 show_error_context = true
 pretty = true
-exclude = ["anyburl/scripts/"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
-
-[[tool.mypy.overrides]]
-module = "anyburl.scripts.*"
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-disallow_untyped_calls = false
-ignore_missing_imports = true
-follow_untyped_imports = true
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "torch_geometric", "torch_geometric.*"]
@@ -120,7 +110,7 @@ module = ["numba", "numba.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "anyburl._chain_kernel"
+module = "anyburl.chain._kernel"
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]

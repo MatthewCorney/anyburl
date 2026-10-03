@@ -47,7 +47,7 @@ def scan_chain_rows(
     ----------
     crow_all, col_all, crow_offsets, col_offsets : np.ndarray
         Concatenated graph CSR tables from
-        :func:`~anyburl._csr_tables.build_csr_tables`.
+        :func:`~anyburl.chain.tables.build_csr_tables`.
     chain_edges : np.ndarray
         Edge-type ids of the body chain, in order.
     head_crow, head_col : np.ndarray

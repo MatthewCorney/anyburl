@@ -10,17 +10,17 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._chain_kernel import FRONTIER_SLOTS, scan_chain_rows
-from ._csr_tables import CsrDirection, CsrTables, build_csr_tables
-from .exceptions import InvalidRuleError
-from .graph import mirrored_edge_type, validate_chain
+from ..exceptions import InvalidRuleError
+from ..graph import mirrored_edge_type, validate_chain
+from ._kernel import FRONTIER_SLOTS, scan_chain_rows
+from .tables import CsrDirection, CsrTables, build_csr_tables
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from numpy.typing import NDArray
 
-    from .graph import EdgeTypeTuple, HeteroGraph
+    from ..graph import EdgeTypeTuple, HeteroGraph
 
 __all__ = ["ChainScanner"]
 

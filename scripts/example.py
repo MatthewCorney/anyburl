@@ -23,14 +23,10 @@ from torch_geometric.data import HeteroData
 
 from anyburl import AnyBURL, AnyBURLConfig, SamplingStrategy
 
-# Suppress beta warnings from sparse CSR tensors
 warnings.filterwarnings("ignore", message=".*Sparse CSR tensor support.*")
 
 PICKLE_PATH = Path(__file__).resolve().parent / "data" / "BIOKG" / "KG_100.pickle"
 
-# ---------------------------------------------------------------------------
-# Pipeline parameters
-# ---------------------------------------------------------------------------
 TOP_K_RULES = 20
 TARGET_EDGE_TYPE = ("protein", "is_annotated_to", "phenotype")
 
@@ -40,7 +36,6 @@ def _load_biokg_pickle() -> HeteroData:
     with PICKLE_PATH.open("rb") as f:
         nx_graph = pickle.load(f)  # noqa: S301
 
-    # Map each node to a contiguous integer within its type
     type_to_ids: dict[str, dict[str, int]] = defaultdict(dict)
     for node, attrs in nx_graph.nodes(data=True):
         node_type = attrs["tipo"]
@@ -48,7 +43,6 @@ def _load_biokg_pickle() -> HeteroData:
         if node not in mapping:
             mapping[node] = len(mapping)
 
-    # Group edges by (src_type, rel, dst_type), deduplicating
     edge_sets: dict[tuple[str, str, str], set[tuple[int, int]]] = defaultdict(set)
     for u, v, attrs in nx_graph.edges(data=True):
         src_type = nx_graph.nodes[u]["tipo"]
@@ -69,9 +63,6 @@ def _load_biokg_pickle() -> HeteroData:
 
 
 def main() -> None:
-    # ------------------------------------------------------------------
-    # 1. Load BIOKG dataset
-    # ------------------------------------------------------------------
     print("=" * 60)
     print("AnyBURL End-to-End Pipeline - BIOKG Dataset")
     print("=" * 60)
@@ -82,9 +73,6 @@ def main() -> None:
     elapsed = time.perf_counter() - t0
     print(f"[1/2] Loaded BIOKG pickle ({elapsed:.2f}s)")
 
-    # ------------------------------------------------------------------
-    # 2. Run pipeline
-    # ------------------------------------------------------------------
     config = AnyBURLConfig(
         sample_size=4000,
         sampling_strategy=SamplingStrategy.UNIFORM,
@@ -103,9 +91,6 @@ def main() -> None:
     elapsed = time.perf_counter() - t0
     print(f"[2/2] Pipeline completed ({elapsed:.2f}s)")
 
-    # ------------------------------------------------------------------
-    # Print results
-    # ------------------------------------------------------------------
     results = pipeline.results
     print()
     print("=" * 60)
@@ -117,7 +102,6 @@ def main() -> None:
     print(f"  Rules passing filter:{len(results)}")
     print()
 
-    # Sort by confidence descending, then support descending
     results.sort(key=lambda x: (x[1].confidence, x[1].support), reverse=True)
 
     print(f"Top {min(TOP_K_RULES, len(results))} Rules (by confidence):")
@@ -137,9 +121,6 @@ def main() -> None:
 
     print("-" * 100)
 
-    # ------------------------------------------------------------------
-    # 3. Predictions
-    # ------------------------------------------------------------------
     print()
     print("=" * 60)
     print("Predictions (filter_known=True)")

@@ -5,8 +5,7 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl._chain_scan import ChainScanner
-from anyburl._csr_tables import build_csr_tables
+from anyburl.chain import ChainScanner, build_csr_tables
 from anyburl.graph import EdgeTypeTuple, HeteroGraph
 
 BORN_IN = ("person", "born_in", "city")

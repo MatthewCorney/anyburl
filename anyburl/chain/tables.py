@@ -15,15 +15,15 @@ import numpy as np
 import torch
 from torch_geometric.utils import to_torch_csr_tensor
 
-from .exceptions import GraphSchemaError
-from .graph import mirrored_edge_type, suppress_sparse_csr_warning
+from ..exceptions import GraphSchemaError
+from ..graph import mirrored_edge_type, suppress_sparse_csr_warning
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from numpy.typing import NDArray
 
-    from .graph import EdgeTypeTuple, HeteroGraph
+    from ..graph import EdgeTypeTuple, HeteroGraph
 
 __all__ = ["CsrDirection", "CsrTables", "build_csr_tables"]
 

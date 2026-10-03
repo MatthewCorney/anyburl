@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .._csr_tables import build_csr_tables
+from ..chain.tables import build_csr_tables
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray

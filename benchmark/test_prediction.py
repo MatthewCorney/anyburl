@@ -1,14 +1,7 @@
 """Benchmarks for RulePredictor init, predict, and per-entity score queries.
 
-``test_predict`` and ``test_predict_filter_known`` use the session-scoped
-``small_graph`` fixture (500 nodes/type) because ``predict()`` iterates
-over every head entity.  For a 50 000-node graph that would be
-50 000 ``score_tails`` calls per benchmark round, making the suite
-impractically slow.
-
-``test_predictor_init``, ``test_score_tails``, and ``test_score_heads``
-use the parametrised ``graph`` fixture (small/medium/large) because those
-operations are single-query and scale well.
+``predict()`` scores every head entity, so its benchmarks use the small graph
+only; single-query operations run on every graph size.
 """
 
 from anyburl.prediction import RulePredictor

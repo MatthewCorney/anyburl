@@ -19,6 +19,9 @@ The learning process follows four stages:
 Learned rules are applied by :class:`RulePredictor` and scored with
 :class:`LinkPredictionEvaluator`.
 
+Everything exported here is the public API. Subpackage modules prefixed with
+an underscore, and the :mod:`anyburl.chain` grounding engine, are internal.
+
 References
 ----------
 .. [1] Meilicke, C., Chekol, M. W., Ruffinelli, D., & Stuckenschmidt, H.
@@ -26,14 +29,17 @@ References
    *IJCAI*.
 """
 
-from .anyburl import AnyBURL, AnyBURLConfig
 from .anytime import (
     AnytimeConfig,
     AnytimeLearner,
     AnytimeReport,
     LengthReport,
 )
-from .baselines import MetaPathScorer, PopularityScorer, RandomScorer
+from .baselines import (
+    MetaPathScorer,
+    PopularityScorer,
+    RandomScorer,
+)
 from .evaluation import (
     EntityScorer,
     EvaluationConfig,
@@ -48,11 +54,22 @@ from .exceptions import (
     InvalidRuleError,
     NotFittedError,
 )
-from .graph import HeteroGraph
+from .factories import (
+    build_triple_sampler,
+    build_walk_engine,
+)
+from .graph import (
+    EdgeTypeTuple,
+    HeteroGraph,
+)
 from .metrics import (
     RuleEvaluator,
     RuleMetrics,
     aggregate_confidence,
+)
+from .pipeline import (
+    AnyBURL,
+    AnyBURLConfig,
 )
 from .prediction import (
     GroundingMode,
@@ -64,6 +81,7 @@ from .prediction import (
 )
 from .rule import (
     Atom,
+    PathStep,
     Rule,
     RuleConfig,
     RuleGeneralizer,
@@ -73,6 +91,7 @@ from .rule import (
     TermKind,
 )
 from .sampler import (
+    BaseTripleSampler,
     EntityBalancedTripleSampler,
     SamplerConfig,
     SamplingStrategy,
@@ -86,7 +105,13 @@ from .split import (
     TripleSplit,
     split_target_edges,
 )
-from .walk import WalkConfig, WalkEngine, WalkStrategy
+from .walk import (
+    EdgeWeighting,
+    NumbaWalkEngine,
+    WalkConfig,
+    WalkEngine,
+    WalkStrategy,
+)
 
 __all__ = [
     "AnyBURL",
@@ -96,7 +121,10 @@ __all__ = [
     "AnytimeLearner",
     "AnytimeReport",
     "Atom",
+    "BaseTripleSampler",
     "ConfigurationError",
+    "EdgeTypeTuple",
+    "EdgeWeighting",
     "EntityBalancedTripleSampler",
     "EntityScorer",
     "EvaluationConfig",
@@ -110,6 +138,8 @@ __all__ = [
     "LinkPredictionMetrics",
     "MetaPathScorer",
     "NotFittedError",
+    "NumbaWalkEngine",
+    "PathStep",
     "PopularityScorer",
     "Prediction",
     "PredictionConfig",
@@ -138,5 +168,7 @@ __all__ = [
     "WalkStrategy",
     "WeightedTripleSampler",
     "aggregate_confidence",
+    "build_triple_sampler",
+    "build_walk_engine",
     "split_target_edges",
 ]

@@ -226,7 +226,7 @@ class RulePredictor:
         complement = torch.ones(num_candidates)
         for side in sides:
             apply_side(complement, side, query_id, self._scoring_strategy)
-        return 1.0 - complement
+        return torch.ones_like(complement) - complement
 
     def _prediction(
         self,

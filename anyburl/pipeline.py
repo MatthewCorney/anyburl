@@ -2,9 +2,8 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Self, assert_never
+from typing import Self
 
-import torch
 from torch_geometric.data import HeteroData
 from tqdm import tqdm
 
@@ -24,6 +23,7 @@ from .evaluation import (
     TieHandling,
 )
 from .exceptions import NotFittedError
+from .factories import build_triple_sampler, build_walk_engine
 from .graph import EdgeTypeTuple, HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics
 from .prediction import Prediction, PredictionConfig, RulePredictor
@@ -38,23 +38,11 @@ from .rule import (
     RuleThresholds,
     RuleType,
 )
-from .sampler import (
-    BaseTripleSampler,
-    EntityBalancedTripleSampler,
-    SamplerConfig,
-    SamplingStrategy,
-    Triple,
-    UniformTripleSampler,
-    WeightedTripleSampler,
-)
-from .walk import (
-    NumbaWalkEngine,
-    RelationWeightedEdgeSelector,
-    WalkConfig,
-    WalkEngine,
-    WalkStrategy,
-)
+from .sampler import SamplerConfig, SamplingStrategy, Triple
+from .walk import WalkConfig, WalkStrategy
 from .walk.base import DEFAULT_MIN_WALK_LENGTH, DEFAULT_RANDOM_SEED
+
+__all__ = ["AnyBURL", "AnyBURLConfig"]
 
 logger = get_logger(__name__)
 
@@ -138,79 +126,6 @@ class AnyBURLConfig:
             min_head_coverage=self.min_head_coverage,
             per_type=self.per_type_thresholds,
         )
-
-
-def build_triple_sampler(
-    graph: HeteroGraph,
-    config: SamplerConfig,
-) -> BaseTripleSampler:
-    """Build a triple sampler for the configured strategy.
-
-    Parameters
-    ----------
-    graph : HeteroGraph
-        The knowledge graph.
-    config : SamplerConfig
-        Sampler configuration.
-
-    Returns
-    -------
-    BaseTripleSampler
-        A sampler instance.
-    """
-    match config.strategy:
-        case SamplingStrategy.UNIFORM:
-            return UniformTripleSampler(graph, config)
-        case SamplingStrategy.ENTITY_BALANCED:
-            return EntityBalancedTripleSampler(graph, config)
-        case SamplingStrategy.RELATION_PROPORTIONAL:
-            weights = torch.ones(len(_non_empty_edge_counts(graph)))
-            return WeightedTripleSampler(graph, config, weights)
-        case SamplingStrategy.RELATION_INVERSE:
-            inverse = 1.0 / _non_empty_edge_counts(graph)
-            return WeightedTripleSampler(graph, config, inverse / inverse.sum())
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _non_empty_edge_counts(graph: HeteroGraph) -> torch.Tensor:
-    """Return the edge count of every edge type that has edges, in graph order."""
-    return torch.tensor(
-        [graph.edge_count(et) for et in graph.edge_types if graph.edge_count(et) > 0],
-        dtype=torch.float32,
-    )
-
-
-def build_walk_engine(
-    graph: HeteroGraph,
-    config: WalkConfig,
-) -> WalkEngine | NumbaWalkEngine:
-    """Build a walk engine for the configured strategy.
-
-    Uniform and reachability-pruned walks use :class:`NumbaWalkEngine`;
-    relation-weighted walks use :class:`WalkEngine`.
-
-    Parameters
-    ----------
-    graph : HeteroGraph
-        The knowledge graph.
-    config : WalkConfig
-        Walk configuration.
-
-    Returns
-    -------
-    WalkEngine | NumbaWalkEngine
-        A walk engine instance.
-    """
-    match config.strategy:
-        case WalkStrategy.UNIFORM | WalkStrategy.REACHABILITY_PRUNED:
-            return NumbaWalkEngine(graph, config)
-        case WalkStrategy.RELATION_WEIGHTED:
-            generator = torch.Generator().manual_seed(config.seed)
-            selector = RelationWeightedEdgeSelector(graph, generator)
-            return WalkEngine(graph, config, selector)
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 class AnyBURL:

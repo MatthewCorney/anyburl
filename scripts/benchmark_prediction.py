@@ -55,9 +55,6 @@ def main() -> None:
     print("=" * 70)
     print()
 
-    # ------------------------------------------------------------------
-    # 1. Load dataset and run pipeline
-    # ------------------------------------------------------------------
     dataset = DBLP(root=DATA_ROOT)
     data = dataset[0]
     print(f"Loaded DBLP: {data}")
@@ -100,16 +97,10 @@ def main() -> None:
 
     graph = HeteroGraph(train_data)
 
-    # ------------------------------------------------------------------
-    # 2. Time RulePredictor.__init__
-    # ------------------------------------------------------------------
     t0 = time.perf_counter()
     predictor = RulePredictor(graph, pipeline.results)
     init_elapsed = time.perf_counter() - t0
 
-    # ------------------------------------------------------------------
-    # 3. Time predict()
-    # ------------------------------------------------------------------
     t0 = time.perf_counter()
     predictions = predictor.predict()
     predict_elapsed = time.perf_counter() - t0
@@ -118,9 +109,6 @@ def main() -> None:
     predictions_filtered = predictor.predict(filter_known=True)
     predict_filtered_elapsed = time.perf_counter() - t0
 
-    # ------------------------------------------------------------------
-    # 4. Time score_tails for random heads
-    # ------------------------------------------------------------------
     num_heads = graph.node_count("author")
     head_ids = random.sample(range(num_heads), min(NUM_SCORE_QUERIES, num_heads))
 
@@ -129,9 +117,6 @@ def main() -> None:
         predictor.score_tails(head_id)
     score_tails_elapsed = time.perf_counter() - t0
 
-    # ------------------------------------------------------------------
-    # 5. Time score_heads for random tails
-    # ------------------------------------------------------------------
     num_tails = graph.node_count("paper")
     tail_ids = random.sample(range(num_tails), min(NUM_SCORE_QUERIES, num_tails))
 
@@ -140,9 +125,6 @@ def main() -> None:
         predictor.score_heads(tail_id)
     score_heads_elapsed = time.perf_counter() - t0
 
-    # ------------------------------------------------------------------
-    # 6. Print summary table
-    # ------------------------------------------------------------------
     print("=" * 70)
     print("Results")
     print("=" * 70)
@@ -170,9 +152,6 @@ def main() -> None:
     )
     print()
 
-    # ------------------------------------------------------------------
-    # 7. Link prediction quality on the held-out split
-    # ------------------------------------------------------------------
     print("=" * 70)
     print("Link prediction quality (held-out split)")
     print("=" * 70)

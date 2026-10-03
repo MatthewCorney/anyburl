@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl.anyburl import build_walk_engine
+from anyburl.factories import build_walk_engine
 from anyburl.graph import HeteroGraph
 from anyburl.sampler import Triple
 from anyburl.walk import WalkConfig, WalkStrategy

@@ -4,10 +4,10 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl.anyburl import AnyBURL, AnyBURLConfig
 from anyburl.exceptions import ConfigurationError, NotFittedError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
+from anyburl.pipeline import AnyBURL, AnyBURLConfig
 from anyburl.prediction import (
     GroundingMode,
     Prediction,

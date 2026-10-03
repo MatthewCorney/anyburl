@@ -92,11 +92,6 @@ def make_synthetic_graph(
     return HeteroGraph(make_synthetic_hetero_data(nodes_per_type, avg_degree, seed))
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="session", params=["small", "medium", "large"])
 def graph(request) -> HeteroGraph:
     """Session-scoped HeteroGraph parametrised by size (small/medium/large)."""

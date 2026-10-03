@@ -17,5 +17,5 @@ def test_neighbor_lookup(benchmark, graph):
 
 def test_csr_matrix_warm(benchmark, graph):
     """Benchmark CSR float-matrix retrieval with a warm cache."""
-    graph.get_csr_matrix(ET_AB)  # populate cache before timing
+    graph.get_csr_matrix(ET_AB)
     benchmark(graph.get_csr_matrix, ET_AB)

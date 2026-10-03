@@ -5,7 +5,7 @@ from collections import Counter
 import pytest
 import torch
 
-from anyburl.anyburl import build_triple_sampler
+from anyburl.factories import build_triple_sampler
 from anyburl.graph import HeteroGraph
 from anyburl.sampler import (
     EntityBalancedTripleSampler,
