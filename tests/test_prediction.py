@@ -4,8 +4,8 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl import prediction
 from anyburl.anyburl import AnyBURL, AnyBURLConfig
+from anyburl.exceptions import ConfigurationError, NotFittedError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
 from anyburl.prediction import (
@@ -15,6 +15,13 @@ from anyburl.prediction import (
     RuleFiring,
     RulePredictor,
     ScoringStrategy,
+    grounding,
+)
+from anyburl.prediction.grounding import (
+    MaterialisedChain,
+    OnDemandChain,
+    body_chain_key,
+    build_groundings,
 )
 from anyburl.rule import Atom, Rule, RuleType, Term
 
@@ -237,7 +244,7 @@ def test_score_heads_cyclic(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> 
 
 
 def test_empty_results_raises(evaluator_graph: HeteroGraph) -> None:
-    with pytest.raises(ValueError, match="results must not be empty"):
+    with pytest.raises(ConfigurationError, match="results must not be empty"):
         RulePredictor(evaluator_graph, [])
 
 
@@ -266,7 +273,7 @@ def test_ac2_rules_are_skipped(
 
 def test_predict_before_fit_raises() -> None:
     pipeline = AnyBURL(AnyBURLConfig())
-    with pytest.raises(RuntimeError, match="fit"):
+    with pytest.raises(NotFittedError, match="fit"):
         pipeline.predict()
 
 
@@ -508,7 +515,7 @@ def test_top_tails_rejects_a_non_positive_limit(
     results = [(_grounding_rule(), RuleMetrics(2, 0.5, 0.5, 4))]
     predictor = RulePredictor(multi_grounding_graph, results)
 
-    with pytest.raises(ValueError, match="limit must be positive"):
+    with pytest.raises(ConfigurationError, match="limit must be positive"):
         predictor.top_tails(0, limit=0)
 
 
@@ -548,58 +555,49 @@ def test_describe_disambiguates_shared_relation_names() -> None:
 
 
 def test_auto_is_the_default_grounding_mode() -> None:
-    """Materialising unconditionally cost 2.24 GB on one BIOKG chain."""
     assert PredictionConfig().grounding_mode is GroundingMode.AUTO
 
 
 def test_auto_materialises_a_small_chain(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
-    results = [(_grounding_rule(), RuleMetrics(2, 0.5, 0.5, 4))]
-    predictor = RulePredictor(
-        multi_grounding_graph, results, grounding_mode=GroundingMode.AUTO
-    )
+    rule = _grounding_rule()
+    results = [(rule, RuleMetrics(2, 0.5, 0.5, 4))]
 
-    grounding = predictor._cyclic_groups[0].grounding
-    assert type(grounding).__name__ == "_MaterialisedChain"
+    groundings = build_groundings(multi_grounding_graph, results, GroundingMode.AUTO)
+
+    assert isinstance(groundings[body_chain_key(rule)], MaterialisedChain)
 
 
-def test_auto_falls_back_when_the_budget_is_exhausted(
+def test_auto_grounds_per_query_when_over_budget(
     multi_grounding_graph: HeteroGraph,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A chain over budget must ground per query rather than be dropped."""
-    monkeypatch.setattr(prediction, "MAX_MATERIALISED_CHAIN_NNZ", 1)
-    results = [(_grounding_rule(), RuleMetrics(2, 0.5, 0.5, 4))]
-    predictor = RulePredictor(
-        multi_grounding_graph, results, grounding_mode=GroundingMode.AUTO
-    )
+    monkeypatch.setattr(grounding, "MAX_MATERIALISED_CHAIN_NNZ", 1)
+    rule = _grounding_rule()
+    results = [(rule, RuleMetrics(2, 0.5, 0.5, 4))]
 
-    grounding = predictor._cyclic_groups[0].grounding
-    assert type(grounding).__name__ == "_OnDemandChain"
+    groundings = build_groundings(multi_grounding_graph, results, GroundingMode.AUTO)
+
+    assert isinstance(groundings[body_chain_key(rule)], OnDemandChain)
 
 
-def test_auto_scores_identically_to_both_fixed_modes(
+@pytest.mark.parametrize("chain_budget", [1, grounding.MAX_MATERIALISED_CHAIN_NNZ])
+@pytest.mark.parametrize("mode", list(GroundingMode))
+def test_grounding_mode_does_not_change_scores(
     multi_grounding_graph: HeteroGraph,
     monkeypatch: pytest.MonkeyPatch,
+    mode: GroundingMode,
+    chain_budget: int,
 ) -> None:
-    """Grounding choice is a resource decision; it must not move a score."""
     results = [(_grounding_rule(), RuleMetrics(2, 0.5, 0.5, 4))]
-    scores = {}
-    for label, mode in (
-        ("materialised", GroundingMode.MATERIALISED),
-        ("on_demand", GroundingMode.ON_DEMAND),
-        ("auto", GroundingMode.AUTO),
-    ):
-        scores[label] = RulePredictor(
-            multi_grounding_graph, results, grounding_mode=mode
-        ).score_tails(0)
-
-    assert torch.allclose(scores["auto"], scores["materialised"])
-    assert torch.allclose(scores["auto"], scores["on_demand"])
-
-    monkeypatch.setattr(prediction, "MAX_MATERIALISED_CHAIN_NNZ", 1)
-    starved = RulePredictor(
-        multi_grounding_graph, results, grounding_mode=GroundingMode.AUTO
+    reference = RulePredictor(
+        multi_grounding_graph, results, grounding_mode=GroundingMode.MATERIALISED
     ).score_tails(0)
-    assert torch.allclose(starved, scores["materialised"])
+    monkeypatch.setattr(grounding, "MAX_MATERIALISED_CHAIN_NNZ", chain_budget)
+
+    scores = RulePredictor(
+        multi_grounding_graph, results, grounding_mode=mode
+    ).score_tails(0)
+
+    assert torch.allclose(scores, reference)

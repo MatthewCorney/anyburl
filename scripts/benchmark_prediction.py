@@ -20,6 +20,7 @@ from anyburl import (
     AnyBURLConfig,
     PredictionConfig,
     RulePredictor,
+    RuleType,
     SamplingStrategy,
     ScoringStrategy,
     SplitConfig,
@@ -195,25 +196,14 @@ def main() -> None:
             )
     print()
 
-    # Chain grounding stats
-    print("Chain grounding stats:")
-    print(f"  Cyclic groups: {len(predictor._cyclic_groups)}")
-    print(f"  AC1 groups:    {len(predictor._ac1_groups)}")
-    for i, g in enumerate(predictor._cyclic_groups):
-        nnz = g.grounding.product.col_indices().numel()
-        shape = tuple(g.grounding.product.shape)
-        print(
-            f"    cyclic[{i}]: shape={shape} nnz={nnz} "
-            f"conf={g.aggregated_confidence:.4f}"
-        )
-    for i, g in enumerate(predictor._ac1_groups):
-        nnz = g.grounding.product.col_indices().numel()
-        shape = tuple(g.grounding.product.shape)
-        print(
-            f"    ac1[{i}]: shape={shape} nnz={nnz} "
-            f"subj_grounded={len(g.subject_grounded)} "
-            f"obj_grounded={len(g.object_grounded)}"
-        )
+    print("Distinct body chains by rule type:")
+    for rule_type in RuleType:
+        chains = {
+            tuple(atom.edge_signature for atom in rule.body)
+            for rule, _ in pipeline.results
+            if rule.rule_type is rule_type
+        }
+        print(f"  {rule_type.value:<8} {len(chains)}")
     print()
 
 
