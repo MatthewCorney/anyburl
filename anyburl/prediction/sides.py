@@ -13,7 +13,7 @@ from ..rule import Rule, RuleType, TermKind
 from .grounding import BodyChainKey, ChainGrounding, body_chain_key
 from .scoring import ScoringStrategy, evidence_weights
 
-__all__ = ["ChainSide", "apply_side", "build_chain_sides"]
+__all__ = ["ChainSide", "apply_side", "build_chain_sides", "side_evidence"]
 
 ChainFetch = Callable[[int], tuple[Tensor, Tensor]]
 """Returns a query entity's candidates and their grounding counts."""
@@ -112,6 +112,38 @@ def apply_side(
     complement[matching_ids] *= (1.0 - side.candidate_values[reachable]) ** (
         dense_weights[matching_ids]
     )
+
+
+def side_evidence(
+    side: ChainSide,
+    query_id: int,
+    num_candidates: int,
+    strategy: ScoringStrategy,
+) -> tuple[Tensor, Tensor]:
+    """Return one chain side's contribution and grounding count per candidate.
+
+    Parameters
+    ----------
+    side : ChainSide
+        The chain side to read.
+    query_id : int
+        The entity being queried.
+    num_candidates : int
+        Number of candidate entities.
+    strategy : ScoringStrategy
+        How grounding counts weigh on each contribution.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor]
+        Dense ``(num_candidates,)`` contributions and grounding counts.
+    """
+    complement = torch.ones(num_candidates)
+    apply_side(complement, side, query_id, strategy)
+    candidates, counts = side.fetch(query_id)
+    groundings = torch.zeros(num_candidates)
+    groundings[candidates] = counts.to(groundings.dtype)
+    return torch.ones_like(complement) - complement, groundings
 
 
 @dataclass(slots=True)

@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.evaluation import QueryDirection
 from anyburl.exceptions import ConfigurationError, NotFittedError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
@@ -512,3 +513,72 @@ def test_grounding_mode_does_not_change_scores(
     ).score_tails(0)
 
     assert torch.allclose(scores, reference)
+
+
+@pytest.mark.parametrize("scoring_strategy", list(ScoringStrategy))
+def test_chain_evidence_composes_into_the_score(
+    evaluator_graph: HeteroGraph,
+    cyclic_rule: Rule,
+    scoring_strategy: ScoringStrategy,
+) -> None:
+    """Per-chain contributions must noisy-or back into the predictor's score."""
+    results = [
+        (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
+        (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+        (object_grounded(1), RuleMetrics(1, 0.6, 0.33, 3)),
+    ]
+    predictor = RulePredictor(
+        evaluator_graph, results, scoring_strategy=scoring_strategy
+    )
+
+    for direction, query_ids, score in (
+        (QueryDirection.TAIL, range(4), predictor.score_tails),
+        (QueryDirection.HEAD, range(3), predictor.score_heads),
+    ):
+        for query_id in query_ids:
+            evidence = predictor.chain_evidence(direction, query_id)
+            composed = 1.0 - torch.prod(1.0 - evidence.contributions, dim=0)
+            assert torch.allclose(composed, score(query_id), atol=1e-6)
+
+
+def test_chain_evidence_rows_follow_chains(
+    evaluator_graph: HeteroGraph, cyclic_rule: Rule
+) -> None:
+    results = [
+        (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
+        (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+    ]
+    predictor = RulePredictor(evaluator_graph, results)
+
+    evidence = predictor.chain_evidence(QueryDirection.TAIL, 0)
+
+    assert [rule_type for _, rule_type in predictor.chains] == [
+        RuleType.CYCLIC,
+        RuleType.AC1,
+    ]
+    assert evidence.contributions.shape == (2, evaluator_graph.node_count("city"))
+
+
+def test_chain_evidence_reports_grounding_counts(
+    multi_grounding_graph: HeteroGraph,
+) -> None:
+    """City 2 is reached by two body groundings, city 3 by one, city 0 by none."""
+    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    predictor = RulePredictor(multi_grounding_graph, results)
+
+    groundings = predictor.chain_evidence(QueryDirection.TAIL, 0).groundings[0]
+
+    assert groundings[2].item() == 2
+    assert groundings[3].item() == 1
+    assert groundings[0].item() == 0
+
+
+def test_chain_evidence_is_empty_without_scoring_rules(
+    evaluator_graph: HeteroGraph,
+) -> None:
+    """AC2 rules are ignored, which can leave no chains at all."""
+    predictor = RulePredictor(evaluator_graph, [(ac2_born_in(), metrics_with(0.5))])
+
+    evidence = predictor.chain_evidence(QueryDirection.TAIL, 0)
+
+    assert evidence.contributions.shape == (0, evaluator_graph.node_count("city"))

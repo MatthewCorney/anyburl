@@ -2,20 +2,22 @@
 
 from collections import defaultdict
 from collections.abc import Sequence
+from typing import assert_never
 
 import torch
 from torch import Tensor
 from tqdm import tqdm
 
 from .._logging import get_logger
+from ..evaluation import QueryDirection
 from ..exceptions import ConfigurationError
 from ..graph import EdgeTypeTuple, HeteroGraph
 from ..metrics import RuleMetrics
-from ..rule import Rule
-from .grounding import GroundingMode, build_groundings
-from .records import Prediction, RuleFiring
+from ..rule import Rule, RuleType
+from .grounding import BodyChainKey, GroundingMode, build_groundings
+from .records import ChainEvidence, Prediction, RuleFiring
 from .scoring import ScoringStrategy, weight_for_candidate
-from .sides import ChainSide, apply_side, build_chain_sides
+from .sides import ChainSide, apply_side, build_chain_sides, side_evidence
 
 __all__ = ["DEFAULT_TOP_TAILS", "RulePredictor"]
 
@@ -78,6 +80,11 @@ class RulePredictor:
             results, build_groundings(graph, results, grounding_mode)
         )
 
+    @property
+    def chains(self) -> tuple[tuple[BodyChainKey, RuleType], ...]:
+        """The body chain and rule type of each :meth:`chain_evidence` row."""
+        return tuple((side.chain, side.rule_type) for side in self._tail_sides)
+
     def predict(
         self, *, filter_known: bool = False, min_score: float = 0.0
     ) -> list[Prediction]:
@@ -138,6 +145,41 @@ class RulePredictor:
             1-D float tensor of shape ``(num_heads,)``.
         """
         return self._score(self._head_sides, tail_id, self._num_heads)
+
+    def chain_evidence(self, direction: QueryDirection, query_id: int) -> ChainEvidence:
+        """Break a query's score down into each body chain's contribution.
+
+        Parameters
+        ----------
+        direction : QueryDirection
+            ``TAIL`` to score tails of head ``query_id``, ``HEAD`` to score
+            heads of tail ``query_id``.
+        query_id : int
+            The entity being queried.
+
+        Returns
+        -------
+        ChainEvidence
+            One row per body chain over every candidate, in the order of
+            :attr:`chains`. Tail and head sides share that order.
+        """
+        match direction:
+            case QueryDirection.TAIL:
+                sides, num_candidates = self._tail_sides, self._num_tails
+            case QueryDirection.HEAD:
+                sides, num_candidates = self._head_sides, self._num_heads
+            case _ as unreachable:
+                assert_never(unreachable)
+
+        rows = [
+            side_evidence(side, query_id, num_candidates, self._scoring_strategy)
+            for side in sides
+        ]
+        empty = torch.zeros(0, num_candidates)
+        return ChainEvidence(
+            contributions=torch.stack([row[0] for row in rows]) if rows else empty,
+            groundings=torch.stack([row[1] for row in rows]) if rows else empty,
+        )
 
     def explain(self, head_id: int, tail_id: int) -> tuple[RuleFiring, ...]:
         """Report which rules produce the score for one predicted pair.
