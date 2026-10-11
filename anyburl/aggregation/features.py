@@ -17,7 +17,12 @@ from ..evaluation import QueryDirection
 from ..prediction import ChainEvidence, RulePredictor, format_chain
 from ..stratification import RelationDegrees
 
-__all__ = ["CandidateFeature", "CandidateFeaturizer", "build_features"]
+__all__ = [
+    "CandidateFeature",
+    "CandidateFeaturizer",
+    "build_features",
+    "column_of",
+]
 
 LOG_SCORE_FLOOR: float = 1e-6
 """Added to rule scores before the log, so unreached candidates stay finite."""
@@ -51,6 +56,22 @@ class CandidateFeature(StrEnum):
     LOG_GROUNDINGS = "log_groundings"
     LOG_DEGREE = "log_degree"
     IS_UNSEEN = "is_unseen"
+
+
+def column_of(feature: CandidateFeature) -> int:
+    """Return the column index of a summary feature in the feature matrix.
+
+    Parameters
+    ----------
+    feature : CandidateFeature
+        The summary feature.
+
+    Returns
+    -------
+    int
+        Its column in :func:`build_features` output.
+    """
+    return list(CandidateFeature).index(feature)
 
 
 def build_features(evidence: ChainEvidence, candidate_degrees: Tensor) -> Tensor:
