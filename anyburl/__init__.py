@@ -116,6 +116,7 @@ from .stratification import (
     relation_degrees,
     stratify_by_degree,
 )
+from .validation_split import ValidationSplit, split_with_validation
 from .walk import (
     EdgeWeighting,
     NumbaWalkEngine,
@@ -179,6 +180,7 @@ __all__ = [
     "Triple",
     "TripleSplit",
     "UniformTripleSampler",
+    "ValidationSplit",
     "WalkConfig",
     "WalkEngine",
     "WalkStrategy",
@@ -188,6 +190,7 @@ __all__ = [
     "build_walk_engine",
     "relation_degrees",
     "split_target_edges",
+    "split_with_validation",
     "stratify_by_degree",
     "summarize_ranks",
 ]
