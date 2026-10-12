@@ -29,11 +29,17 @@ class RuleType(StrEnum):
     CYCLIC : str
         Cyclic rule. Both head variables appear in the body, forming a
         closed variable chain.
+    ACYCLIC : str
+        One head term is a constant and the body is a single atom leaving
+        the free head variable, ending at a constant (``r(X, c) :- b(X, d)``)
+        or at an unbound variable (``r(X, c) :- b(X, A)``). AnyBURL's AC1
+        and AC2 rules of length one.
     """
 
     AC1 = "ac1"
     AC2 = "ac2"
     CYCLIC = "cyclic"
+    ACYCLIC = "acyclic"
 
 
 class TermKind(Enum):

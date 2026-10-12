@@ -22,7 +22,7 @@ from .evaluation import (
     LinkPredictionMetrics,
     TieHandling,
 )
-from .exceptions import NotFittedError
+from .exceptions import ConfigurationError, NotFittedError
 from .factories import build_triple_sampler, build_walk_engine
 from .graph import EdgeTypeTuple, HeteroGraph
 from .metrics import RuleEvaluator, RuleMetrics
@@ -31,15 +31,17 @@ from .rule import (
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_MIN_HEAD_COVERAGE,
     DEFAULT_MIN_SUPPORT,
+    AcyclicStep,
     PathStep,
     Rule,
     RuleConfig,
     RuleGeneralizer,
     RuleThresholds,
     RuleType,
+    generalize_acyclic,
 )
 from .sampler import SamplerConfig, SamplingStrategy, Triple
-from .walk import WalkConfig, WalkStrategy
+from .walk import AcyclicStepSampler, WalkConfig, WalkStrategy
 from .walk.base import DEFAULT_MIN_WALK_LENGTH, DEFAULT_RANDOM_SEED
 
 __all__ = ["AnyBURL", "AnyBURLConfig"]
@@ -49,6 +51,7 @@ logger = get_logger(__name__)
 DEFAULT_PIPELINE_SAMPLE_SIZE: int = 2000
 DEFAULT_PIPELINE_MAX_WALK_LENGTH: int = 4
 DEFAULT_PIPELINE_MAX_WALK_ATTEMPTS: int = 700
+NO_ACYCLIC_SAMPLES: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +82,16 @@ class AnyBURLConfig:
         Minimum head coverage threshold for rule filtering.
     per_type_thresholds : Mapping[RuleType, RuleThresholds]
         Floors replacing the defaults for the named rule types.
+    acyclic_samples_per_end : int
+        One-step walks drawn from each endpoint of every sampled triple and
+        generalized into acyclic rules. Zero learns no acyclic rules.
     seed : int
         Random seed for reproducibility.
+
+    Raises
+    ------
+    ConfigurationError
+        If ``acyclic_samples_per_end`` is negative.
     """
 
     sample_size: int = DEFAULT_PIPELINE_SAMPLE_SIZE
@@ -97,7 +108,17 @@ class AnyBURLConfig:
     min_head_coverage: float = DEFAULT_MIN_HEAD_COVERAGE
     per_type_thresholds: Mapping[RuleType, RuleThresholds] = field(default_factory=dict)
 
+    acyclic_samples_per_end: int = NO_ACYCLIC_SAMPLES
+
     seed: int = DEFAULT_RANDOM_SEED
+
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        if self.acyclic_samples_per_end < 0:
+            raise ConfigurationError(
+                "acyclic_samples_per_end must be non-negative, "
+                f"got {self.acyclic_samples_per_end}"
+            )
 
     def sampler_config(self, *, seed_offset: int = 0) -> SamplerConfig:
         """Return the sampler configuration, seeded with ``seed + seed_offset``."""
@@ -144,6 +165,8 @@ class AnyBURL:
         Sampled target triples.
     paths : list[tuple[list[PathStep], Triple]]
         Walk paths paired with their source triples.
+    acyclic_steps : list[AcyclicStep]
+        One-step walks generalized into acyclic rules.
     rules : list[Rule]
         Deduplicated candidate rules from generalization.
     results : list[tuple[Rule, RuleMetrics]]
@@ -158,6 +181,7 @@ class AnyBURL:
         self.graph: HeteroGraph | None = None
         self.triples: list[Triple] = []
         self.paths: list[tuple[list[PathStep], Triple]] = []
+        self.acyclic_steps: list[AcyclicStep] = []
         self.rules: list[Rule] = []
         self.results: list[tuple[Rule, RuleMetrics]] = []
         self.report: AnytimeReport | None = None
@@ -180,6 +204,7 @@ class AnyBURL:
             self.graph, self.config.sampler_config()
         ).sample()
         self._walk(self.graph)
+        self._sample_acyclic(self.graph)
         self._generalize()
         evaluator = RuleEvaluator(self.graph, self.config.rule_config())
         self.results = evaluator.evaluate_batch(self.rules)
@@ -341,10 +366,24 @@ class AnyBURL:
             "Total triples: %d | Total paths: %d", len(self.triples), len(self.paths)
         )
 
+    def _sample_acyclic(self, graph: HeteroGraph) -> None:
+        """Draw one-step walks from both endpoints of each sampled triple."""
+        samples = self.config.acyclic_samples_per_end
+        if samples == NO_ACYCLIC_SAMPLES:
+            return
+        sampler = AcyclicStepSampler(graph, self.config.seed)
+        self.acyclic_steps = [
+            step for triple in self.triples for step in sampler.sample(triple, samples)
+        ]
+        logger.info("Total acyclic steps: %d", len(self.acyclic_steps))
+
     def _generalize(self) -> None:
         """Generalize walk paths into deduplicated Horn rules."""
         generalizer = RuleGeneralizer(self.config.rule_config())
         unique: dict[str, Rule] = {}
+        for step in self.acyclic_steps:
+            for rule in generalize_acyclic(step):
+                unique.setdefault(str(rule), rule)
         for path, triple in tqdm(self.paths, desc="Generalizing rules"):
             for rule in generalizer.generalize(
                 path,

@@ -13,7 +13,9 @@ from ..evaluation import QueryDirection
 from ..exceptions import ConfigurationError
 from ..graph import EdgeTypeTuple, HeteroGraph
 from ..metrics import RuleMetrics
+from ..metrics.acyclic import AcyclicIndex
 from ..rule import Rule, RuleType
+from .acyclic import AcyclicScorer, Firings
 from .grounding import BodyChainKey, build_groundings
 from .records import ChainEvidence, Prediction, PredictionConfig, RuleFiring
 from .scoring import (
@@ -36,8 +38,9 @@ class RulePredictor:
 
     Rules sharing a body chain share one grounding. Each chain's
     contribution is weighted by the configured :class:`ScoringStrategy`, and
-    contributions combine per :class:`ConfidenceAggregation`. AC2 rules are
-    ignored.
+    contributions combine per :class:`ConfidenceAggregation`. Acyclic rules
+    fire individually and combine the same way, but are left out of
+    :meth:`chain_evidence` and :meth:`explain`. AC2 rules are ignored.
 
     Parameters
     ----------
@@ -83,6 +86,9 @@ class RulePredictor:
             results,
             build_groundings(graph, results, self._config.grounding_mode),
             self._config.unseen_negatives,
+        )
+        self._acyclic = AcyclicScorer(
+            AcyclicIndex(graph), results, self._config.unseen_negatives
         )
 
     @property
@@ -134,7 +140,12 @@ class RulePredictor:
         Tensor
             1-D float tensor of shape ``(num_tails,)``.
         """
-        return self._score(self._tail_sides, head_id, self._num_tails)
+        return self._score(
+            self._tail_sides,
+            self._acyclic.tail_firings(head_id),
+            head_id,
+            self._num_tails,
+        )
 
     def score_heads(self, tail_id: int) -> Tensor:
         """Compute noisy-or scores for all candidate heads given a tail.
@@ -149,7 +160,12 @@ class RulePredictor:
         Tensor
             1-D float tensor of shape ``(num_heads,)``.
         """
-        return self._score(self._head_sides, tail_id, self._num_heads)
+        return self._score(
+            self._head_sides,
+            self._acyclic.head_firings(tail_id),
+            tail_id,
+            self._num_heads,
+        )
 
     def chain_evidence(self, direction: QueryDirection, query_id: int) -> ChainEvidence:
         """Break a query's score down into each body chain's contribution.
@@ -267,32 +283,33 @@ class RulePredictor:
         ]
 
     def _score(
-        self, sides: Sequence[ChainSide], query_id: int, num_candidates: int
+        self,
+        sides: Sequence[ChainSide],
+        firings: Firings,
+        query_id: int,
+        num_candidates: int,
     ) -> Tensor:
-        """Combine every chain side's contribution per the aggregation."""
+        """Combine every chain side's and acyclic rule's contribution."""
+        candidates, confidences = firings
+        log_complement = torch.zeros(num_candidates)
+        log_complement.index_add_(0, candidates, torch.log1p(-confidences))
+        complement = torch.exp(log_complement)
         match self._config.aggregation:
             case ConfidenceAggregation.NOISY_OR:
-                complement = torch.ones(num_candidates)
                 for side in sides:
                     apply_side(complement, side, query_id, self._scoring_strategy)
                 return torch.ones_like(complement) - complement
             case ConfidenceAggregation.MAXIMUM:
-                return self._max_score(sides, query_id, num_candidates)
+                best = torch.zeros(num_candidates)
+                best.scatter_reduce_(0, candidates, confidences, "amax")
+                for side in sides:
+                    side_complement = torch.ones(num_candidates)
+                    apply_side(side_complement, side, query_id, self._scoring_strategy)
+                    torch.maximum(best, 1.0 - side_complement, out=best)
+                    complement *= side_complement
+                return best + TIE_BREAK_WEIGHT * (1.0 - complement)
             case _ as unreachable:
                 assert_never(unreachable)
-
-    def _max_score(
-        self, sides: Sequence[ChainSide], query_id: int, num_candidates: int
-    ) -> Tensor:
-        """Return the strongest side's contribution plus a noisy-or tie-break."""
-        best = torch.zeros(num_candidates)
-        complement = torch.ones(num_candidates)
-        for side in sides:
-            side_complement = torch.ones(num_candidates)
-            apply_side(side_complement, side, query_id, self._scoring_strategy)
-            torch.maximum(best, 1.0 - side_complement, out=best)
-            complement *= side_complement
-        return best + TIE_BREAK_WEIGHT * (1.0 - complement)
 
     def _prediction(
         self,

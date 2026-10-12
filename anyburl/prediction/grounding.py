@@ -31,6 +31,9 @@ logger = get_logger(__name__)
 BodyChainKey = tuple[tuple[str, str, str], ...]
 """Unique identifier for a body chain: tuple of edge-type triples."""
 
+CHAINLESS_RULE_TYPES: frozenset[RuleType] = frozenset({RuleType.AC2, RuleType.ACYCLIC})
+"""Rule types scored without a body-chain grounding."""
+
 BYTES_PER_MEGABYTE: float = 1e6
 
 MATERIALISED_CHAIN_BYTES_PER_NNZ: int = 24
@@ -195,10 +198,10 @@ def _unique_body_chains(
     graph: HeteroGraph,
     results: Sequence[tuple[Rule, RuleMetrics]],
 ) -> dict[BodyChainKey, tuple[Tensor, ...]]:
-    """Collect the body matrices of each distinct non-AC2 chain."""
+    """Collect the body matrices of each distinct cyclic or AC1 chain."""
     chains: dict[BodyChainKey, tuple[Tensor, ...]] = {}
     for rule, _ in results:
-        if rule.rule_type is RuleType.AC2:
+        if rule.rule_type in CHAINLESS_RULE_TYPES:
             continue
         key = body_chain_key(rule)
         if key not in chains:

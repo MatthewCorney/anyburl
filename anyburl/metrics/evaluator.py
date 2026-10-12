@@ -13,6 +13,7 @@ from ..chain import ChainScanner
 from ..exceptions import GraphSchemaError
 from ..graph import EdgeTypeTuple, HeteroGraph
 from ..rule import Atom, Rule, RuleConfig, RuleType, TermKind
+from .acyclic import AcyclicIndex, evaluate_acyclic
 from .coverage_warning import HeadCoverageWarning
 from .rule_metrics import NO_PREDICTIONS, RuleMetrics, metrics_from_counts
 
@@ -45,6 +46,7 @@ class RuleEvaluator:
         self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
         self._coverage_warning = HeadCoverageWarning(config)
         self._scanner = ChainScanner(graph)
+        self._acyclic_index = AcyclicIndex(graph)
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
         """Compute quality metrics for a single rule.
@@ -66,6 +68,8 @@ class RuleEvaluator:
                 return self._evaluate_ac1(rule)
             case RuleType.AC2:
                 return self._evaluate_ac2(rule)
+            case RuleType.ACYCLIC:
+                return self._evaluate_acyclic(rule)
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -288,6 +292,12 @@ class RuleEvaluator:
         return metrics_from_counts(
             num_predictions, support, self._graph.edge_count(head_et)
         )
+
+    def _evaluate_acyclic(self, rule: Rule) -> RuleMetrics:
+        """Evaluate an acyclic rule from its single body atom."""
+        self._edge_type_of(rule.head)
+        self._edge_type_of(rule.body[0])
+        return evaluate_acyclic(rule, self._acyclic_index, self._graph)
 
     def _body_signature(self, rule: Rule) -> BodySignature:
         """Return the ordered edge types of a rule's body chain."""
