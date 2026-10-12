@@ -11,7 +11,7 @@ from torch import Tensor
 from ..metrics import RuleMetrics, aggregate_confidence
 from ..rule import Rule, RuleType, TermKind
 from .grounding import BodyChainKey, ChainGrounding, body_chain_key
-from .scoring import ScoringStrategy, evidence_weights
+from .scoring import ScoringStrategy, corrected_confidence, evidence_weights
 
 __all__ = ["ChainSide", "apply_side", "build_chain_sides", "side_evidence"]
 
@@ -164,6 +164,7 @@ class _ChainConfidences:
 def build_chain_sides(
     results: Sequence[tuple[Rule, RuleMetrics]],
     groundings: Mapping[BodyChainKey, ChainGrounding],
+    unseen_negatives: int,
 ) -> tuple[list[ChainSide], list[ChainSide]]:
     """Group rules by body chain into tail-scoring and head-scoring sides.
 
@@ -173,6 +174,8 @@ def build_chain_sides(
         Rules with their metrics. AC2 rules are ignored.
     groundings : Mapping[BodyChainKey, ChainGrounding]
         Grounding per body chain.
+    unseen_negatives : int
+        Assumed incorrect predictions added to each rule's denominator.
 
     Returns
     -------
@@ -180,7 +183,7 @@ def build_chain_sides(
         Sides for scoring tails given a head, and heads given a tail, in
         the same chain order. Cyclic chains come first.
     """
-    collected = _collect_confidences(results)
+    collected = _collect_confidences(results, unseen_negatives)
     tail_sides: list[ChainSide] = []
     head_sides: list[ChainSide] = []
 
@@ -219,15 +222,16 @@ def build_chain_sides(
 
 
 def _collect_confidences(
-    results: Sequence[tuple[Rule, RuleMetrics]],
+    results: Sequence[tuple[Rule, RuleMetrics]], unseen_negatives: int
 ) -> _ChainConfidences:
     """Collect cyclic and AC1 rule confidences per body chain."""
     collected = _ChainConfidences()
     for rule, metrics in results:
         key = body_chain_key(rule)
+        confidence = corrected_confidence(metrics, unseen_negatives)
         match rule.rule_type:
             case RuleType.CYCLIC:
-                collected.cyclic[key].append(metrics.confidence)
+                collected.cyclic[key].append(confidence)
             case RuleType.AC1:
                 head = rule.head
                 if head.subject.kind is TermKind.CONSTANT:
@@ -235,7 +239,7 @@ def _collect_confidences(
                 else:
                     grounded, term = collected.object_grounded, head.object_
                 if term.entity_id is not None:
-                    grounded[key][term.entity_id].append(metrics.confidence)
+                    grounded[key][term.entity_id].append(confidence)
             case RuleType.AC2:
                 continue
             case _ as unreachable:

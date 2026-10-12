@@ -9,10 +9,11 @@ from .records import (
     RuleFiring,
     format_chain,
 )
-from .scoring import ScoringStrategy
+from .scoring import ConfidenceAggregation, ScoringStrategy
 
 __all__ = [
     "ChainEvidence",
+    "ConfidenceAggregation",
     "GroundingMode",
     "Prediction",
     "PredictionConfig",

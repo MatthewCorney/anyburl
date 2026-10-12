@@ -4,9 +4,10 @@ from dataclasses import dataclass
 
 from torch import Tensor
 
+from ..exceptions import ConfigurationError
 from ..rule import RuleType
 from .grounding import BodyChainKey, GroundingMode
-from .scoring import ScoringStrategy
+from .scoring import NO_UNSEEN_NEGATIVES, ConfidenceAggregation, ScoringStrategy
 
 __all__ = [
     "ChainEvidence",
@@ -44,10 +45,29 @@ class PredictionConfig:
     grounding_mode : GroundingMode
         Whether body chains are materialised, grounded per query, or chosen
         between by size.
+    aggregation : ConfidenceAggregation
+        How the contributions of different body chains combine.
+    unseen_negatives : int
+        Assumed incorrect predictions added to each rule's denominator
+        before scoring. Zero scores rules by their raw confidence.
+
+    Raises
+    ------
+    ConfigurationError
+        If ``unseen_negatives`` is negative.
     """
 
     scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED
     grounding_mode: GroundingMode = GroundingMode.AUTO
+    aggregation: ConfidenceAggregation = ConfidenceAggregation.NOISY_OR
+    unseen_negatives: int = NO_UNSEEN_NEGATIVES
+
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        if self.unseen_negatives < 0:
+            raise ConfigurationError(
+                f"unseen_negatives must be non-negative, got {self.unseen_negatives}"
+            )
 
 
 @dataclass(frozen=True, slots=True)

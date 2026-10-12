@@ -6,15 +6,45 @@ from typing import assert_never
 import torch
 from torch import Tensor
 
+from ..metrics import RuleMetrics
+
 __all__ = [
     "GROUNDING_WEIGHT_OFFSET",
+    "NO_UNSEEN_NEGATIVES",
+    "TIE_BREAK_WEIGHT",
+    "ConfidenceAggregation",
     "ScoringStrategy",
+    "corrected_confidence",
     "evidence_weights",
     "weight_for_candidate",
 ]
 
 GROUNDING_WEIGHT_OFFSET: float = 1.0
 """Offset in ``log2(offset + groundings)``, set so one grounding weighs 1.0."""
+
+NO_UNSEEN_NEGATIVES: int = 0
+"""Default unseen-negative count: score rules by their raw confidence."""
+
+TIE_BREAK_WEIGHT: float = 1e-4
+"""Scale of the noisy-or term that breaks ties under maximum aggregation."""
+
+
+class ConfidenceAggregation(StrEnum):
+    """How the contributions of different body chains combine into a score.
+
+    Attributes
+    ----------
+    NOISY_OR : str
+        ``1 - prod(1 - contribution)``: every firing chain raises the score.
+    MAXIMUM : str
+        The strongest chain's contribution, with ties broken by a small
+        noisy-or term. Approximates AnyBURL's ranking by the best rule,
+        then the next best, so many weak rules cannot outrank one strong
+        rule.
+    """
+
+    NOISY_OR = "noisy_or"
+    MAXIMUM = "maximum"
 
 
 class ScoringStrategy(StrEnum):
@@ -33,6 +63,30 @@ class ScoringStrategy(StrEnum):
 
     NOISY_OR = "noisy_or"
     PATH_WEIGHTED = "path_weighted"
+
+
+def corrected_confidence(metrics: RuleMetrics, unseen_negatives: int) -> float:
+    """Return a rule's confidence with ``unseen_negatives`` added to its predictions.
+
+    ``support / (num_predictions + unseen_negatives)`` shrinks rules that made
+    few predictions, so a rule correct on 2 of 2 pairs no longer scores 1.0.
+
+    Parameters
+    ----------
+    metrics : RuleMetrics
+        The rule's evaluated metrics.
+    unseen_negatives : int
+        Assumed incorrect predictions added to the denominator.
+
+    Returns
+    -------
+    float
+        The corrected confidence; the raw confidence when
+        ``unseen_negatives`` is zero.
+    """
+    if unseen_negatives == NO_UNSEEN_NEGATIVES:
+        return metrics.confidence
+    return metrics.support / (metrics.num_predictions + unseen_negatives)
 
 
 def evidence_weights(groundings: Tensor, strategy: ScoringStrategy) -> Tensor:

@@ -14,9 +14,13 @@ from ..exceptions import ConfigurationError
 from ..graph import EdgeTypeTuple, HeteroGraph
 from ..metrics import RuleMetrics
 from ..rule import Rule, RuleType
-from .grounding import BodyChainKey, GroundingMode, build_groundings
-from .records import ChainEvidence, Prediction, RuleFiring
-from .scoring import ScoringStrategy, weight_for_candidate
+from .grounding import BodyChainKey, build_groundings
+from .records import ChainEvidence, Prediction, PredictionConfig, RuleFiring
+from .scoring import (
+    TIE_BREAK_WEIGHT,
+    ConfidenceAggregation,
+    weight_for_candidate,
+)
 from .sides import ChainSide, apply_side, build_chain_sides, side_evidence
 
 __all__ = ["DEFAULT_TOP_TAILS", "RulePredictor"]
@@ -30,9 +34,10 @@ DEFAULT_TOP_TAILS: int = 10
 class RulePredictor:
     """Grounds rules against a graph and aggregates their predictions.
 
-    Rules sharing a body chain share one grounding. A candidate's score is
-    the noisy-or of the confidences of every rule reaching it, weighted by
-    the configured :class:`ScoringStrategy`. AC2 rules are ignored.
+    Rules sharing a body chain share one grounding. Each chain's
+    contribution is weighted by the configured :class:`ScoringStrategy`, and
+    contributions combine per :class:`ConfidenceAggregation`. AC2 rules are
+    ignored.
 
     Parameters
     ----------
@@ -41,11 +46,9 @@ class RulePredictor:
     results : Sequence[tuple[Rule, RuleMetrics]]
         Rules paired with their evaluated metrics. All rules must
         predict the same head relation.
-    scoring_strategy : ScoringStrategy
-        How rule confidences are weighted against a candidate.
-    grounding_mode : GroundingMode
-        Whether to materialise chain products up front, ground each chain
-        per query, or decide per chain by size.
+    config : PredictionConfig | None
+        Scoring, aggregation and grounding settings. ``None`` uses the
+        defaults.
 
     Raises
     ------
@@ -58,8 +61,7 @@ class RulePredictor:
         graph: HeteroGraph,
         results: Sequence[tuple[Rule, RuleMetrics]],
         *,
-        scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED,
-        grounding_mode: GroundingMode = GroundingMode.AUTO,
+        config: PredictionConfig | None = None,
     ) -> None:
         if not results:
             raise ConfigurationError("results must not be empty")
@@ -71,13 +73,16 @@ class RulePredictor:
             )
 
         self._graph = graph
-        self._scoring_strategy = scoring_strategy
+        self._config = config if config is not None else PredictionConfig()
+        self._scoring_strategy = self._config.scoring_strategy
         self._head_edge_type: EdgeTypeTuple = head_relations.pop()
         head_type, _, tail_type = self._head_edge_type
         self._num_heads = graph.node_count(head_type)
         self._num_tails = graph.node_count(tail_type)
         self._tail_sides, self._head_sides = build_chain_sides(
-            results, build_groundings(graph, results, grounding_mode)
+            results,
+            build_groundings(graph, results, self._config.grounding_mode),
+            self._config.unseen_negatives,
         )
 
     @property
@@ -264,11 +269,30 @@ class RulePredictor:
     def _score(
         self, sides: Sequence[ChainSide], query_id: int, num_candidates: int
     ) -> Tensor:
-        """Return ``1 - prod(1 - contribution)`` over every chain side."""
+        """Combine every chain side's contribution per the aggregation."""
+        match self._config.aggregation:
+            case ConfidenceAggregation.NOISY_OR:
+                complement = torch.ones(num_candidates)
+                for side in sides:
+                    apply_side(complement, side, query_id, self._scoring_strategy)
+                return torch.ones_like(complement) - complement
+            case ConfidenceAggregation.MAXIMUM:
+                return self._max_score(sides, query_id, num_candidates)
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def _max_score(
+        self, sides: Sequence[ChainSide], query_id: int, num_candidates: int
+    ) -> Tensor:
+        """Return the strongest side's contribution plus a noisy-or tie-break."""
+        best = torch.zeros(num_candidates)
         complement = torch.ones(num_candidates)
         for side in sides:
-            apply_side(complement, side, query_id, self._scoring_strategy)
-        return torch.ones_like(complement) - complement
+            side_complement = torch.ones(num_candidates)
+            apply_side(side_complement, side, query_id, self._scoring_strategy)
+            torch.maximum(best, 1.0 - side_complement, out=best)
+            complement *= side_complement
+        return best + TIE_BREAK_WEIGHT * (1.0 - complement)
 
     def _prediction(
         self,

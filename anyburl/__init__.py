@@ -76,6 +76,7 @@ from .pipeline import (
     AnyBURLConfig,
 )
 from .prediction import (
+    ConfidenceAggregation,
     GroundingMode,
     Prediction,
     PredictionConfig,
@@ -134,6 +135,7 @@ __all__ = [
     "AnytimeReport",
     "Atom",
     "BaseTripleSampler",
+    "ConfidenceAggregation",
     "ConfigurationError",
     "DegreeBucket",
     "EdgeTypeTuple",

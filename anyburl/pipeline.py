@@ -304,13 +304,7 @@ class AnyBURL:
             raise NotFittedError(
                 "No rules found. Call fit(data) first and ensure rules pass thresholds."
             )
-        settings = prediction if prediction is not None else PredictionConfig()
-        return RulePredictor(
-            graph,
-            self.results,
-            scoring_strategy=settings.scoring_strategy,
-            grounding_mode=settings.grounding_mode,
-        )
+        return RulePredictor(graph, self.results, config=prediction)
 
     def _mining_stages(self, graph: HeteroGraph) -> MiningStages:
         """Wire the per-batch collaborators the anytime loop drives."""
