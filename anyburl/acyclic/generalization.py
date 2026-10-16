@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import assert_never
 
-from ..graph import EdgeTypeTuple
-from .model import Atom, Rule, RuleType, Term
+from ..core import EdgeTypeTuple
+from ..rule.model import Atom, Rule, RuleType, Term
 
 __all__ = ["AcyclicStep", "WalkAnchor", "generalize_acyclic"]
 

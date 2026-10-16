@@ -4,16 +4,15 @@ import pytest
 import torch
 
 from anyburl.baselines import PopularityScorer
+from anyburl.core import QueryDirection, Triple
 from anyburl.evaluation import (
     EvaluationConfig,
     LinkPredictionEvaluator,
-    QueryDirection,
     QueryRank,
     summarize_ranks,
 )
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
-from anyburl.sampler import Triple
 from anyburl.stratification import (
     RelationDegrees,
     StratificationConfig,

@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from anyburl.core import Triple
 from anyburl.evaluation import (
     EvaluationConfig,
     LinkPredictionEvaluator,
@@ -10,10 +11,10 @@ from anyburl.evaluation import (
     TieHandling,
     rank_with_ties,
 )
+from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.prediction import RulePredictor
 from anyburl.rule import Rule
-from anyburl.sampler import Triple
 from tests.rules import metrics_with
 
 
@@ -110,6 +111,32 @@ def test_filtered_excludes_known_triples(
     raw_metrics = raw_eval.evaluate(test_triples)
 
     assert filtered_metrics.mrr >= raw_metrics.mrr
+
+
+class _NegativeScorer:
+    """Scores every query ``[-10.0, -0.5, -5.0]``, all below zero."""
+
+    def score_tails(self, head_id: int) -> torch.Tensor:
+        return torch.tensor([-10.0, -0.5, -5.0])
+
+    def score_heads(self, tail_id: int) -> torch.Tensor:
+        return torch.tensor([-10.0, -0.5, -5.0])
+
+
+def test_filtering_sinks_known_answers_below_negative_scores(
+    perfect_eval_graph: HeteroGraph,
+) -> None:
+    """A filtered known answer must not outrank a target scoring below zero."""
+    evaluator = LinkPredictionEvaluator(
+        _NegativeScorer(), perfect_eval_graph, EvaluationConfig(filter_known=True)
+    )
+    test_triple = Triple(
+        head_id=0, tail_id=2, head_type="person", tail_type="city", relation="lives_in"
+    )
+
+    tail_query, _ = evaluator.rank_queries([test_triple])
+
+    assert tail_query.rank == 1.0
 
 
 def test_averaged_metrics(
@@ -214,3 +241,21 @@ def test_rank_with_ties_untied_target_is_unaffected_by_policy() -> None:
 def test_evaluation_config_defaults_to_average_tie_handling() -> None:
     """Optimistic ranking inflates MRR when scores are coarse, so is not default."""
     assert EvaluationConfig().tie_handling is TieHandling.AVERAGE
+
+
+def test_rank_queries_rejects_mixed_edge_types(
+    perfect_eval_graph: HeteroGraph,
+) -> None:
+    """Triples of different edge types would be filtered against the wrong edges."""
+    evaluator = LinkPredictionEvaluator(
+        _NegativeScorer(), perfect_eval_graph, EvaluationConfig()
+    )
+    triples = [
+        Triple(
+            head_id=0, tail_id=2, head_type="person", tail_type="city", relation=name
+        )
+        for name in ("lives_in", "born_in")
+    ]
+
+    with pytest.raises(ConfigurationError, match="one edge type"):
+        evaluator.rank_queries(triples)

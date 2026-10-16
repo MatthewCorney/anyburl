@@ -23,9 +23,16 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
-    from ..graph import EdgeTypeTuple, HeteroGraph
+    from ..core import EdgeTypeTuple
+    from ..graph import HeteroGraph
 
-__all__ = ["CsrDirection", "CsrTables", "build_csr_tables"]
+__all__ = [
+    "CsrDirection",
+    "CsrTables",
+    "build_csr_tables",
+    "forward_csr_tables",
+    "reverse_csr_tables",
+]
 
 
 class CsrDirection(StrEnum):
@@ -160,6 +167,26 @@ def build_csr_tables(
         num_dst_nodes=np.array(num_dst, dtype=np.int64),
         edge_type_to_id={et: i for i, et in enumerate(edge_types)},
     )
+
+
+def forward_csr_tables(graph: HeteroGraph) -> CsrTables:
+    """Return the forward tables of ``graph``, shared via :meth:`HeteroGraph.cached`."""
+    return graph.cached(_build_forward)
+
+
+def reverse_csr_tables(graph: HeteroGraph) -> CsrTables:
+    """Return the reverse tables of ``graph``, shared via :meth:`HeteroGraph.cached`."""
+    return graph.cached(_build_reverse)
+
+
+def _build_forward(graph: HeteroGraph) -> CsrTables:
+    """Build the forward tables of ``graph``."""
+    return build_csr_tables(graph, direction=CsrDirection.FORWARD)
+
+
+def _build_reverse(graph: HeteroGraph) -> CsrTables:
+    """Build the reverse tables of ``graph``."""
+    return build_csr_tables(graph, direction=CsrDirection.REVERSE)
 
 
 def _reverse_csr(

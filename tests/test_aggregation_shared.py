@@ -9,17 +9,17 @@ from anyburl.aggregation import (
     TrainingSet,
     concat_training_sets,
 )
-from anyburl.evaluation import QueryDirection
+from anyburl.core import QueryDirection
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
-from anyburl.prediction import PredictionConfig, RulePredictor, ScoringStrategy
+from anyburl.prediction import GroundingWeighting, PredictionConfig, RulePredictor
 from anyburl.rule import Rule
 from anyburl.stratification import relation_degrees
 from tests.rules import object_constant_rule
 
 LIVES_IN = ("person", "lives_in", "city")
-PLAIN = PredictionConfig(scoring_strategy=ScoringStrategy.NOISY_OR)
+PLAIN = PredictionConfig(grounding_weighting=GroundingWeighting.ONCE)
 
 
 def column(features: torch.Tensor, feature: SharedFeature) -> torch.Tensor:
@@ -37,7 +37,7 @@ class TestAcyclicEvidence:
         ]
         predictor = RulePredictor(evaluator_graph, results)
 
-        evidence = predictor.acyclic_evidence(QueryDirection.TAIL, 2)
+        evidence = predictor.evidence.acyclic_evidence(QueryDirection.TAIL, 2)
 
         assert evidence.max_confidence.tolist() == pytest.approx([0.5, 0.0, 0.0])
         assert evidence.noisy_or.tolist() == pytest.approx([0.75, 0.0, 0.0])
@@ -50,7 +50,7 @@ class TestAcyclicEvidence:
             evaluator_graph, [(cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4))]
         )
 
-        evidence = predictor.acyclic_evidence(QueryDirection.HEAD, 0)
+        evidence = predictor.evidence.acyclic_evidence(QueryDirection.HEAD, 0)
 
         assert evidence.firings.sum().item() == 0.0
 
@@ -65,7 +65,7 @@ class TestSharedFeaturizer:
         ]
         predictor = RulePredictor(evaluator_graph, results, config=PLAIN)
         featurizer = SharedFeaturizer(
-            predictor, relation_degrees(evaluator_graph, LIVES_IN)
+            predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
         )
         return featurizer.featurize(QueryDirection.TAIL, 2)
 
@@ -103,7 +103,7 @@ class TestSharedFeaturizer:
             evaluator_graph, [(cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4))]
         )
         featurizer = SharedFeaturizer(
-            predictor, relation_degrees(evaluator_graph, LIVES_IN)
+            predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
         )
 
         name = featurizer.feature_names()[featurizer.score_column]

@@ -1,9 +1,12 @@
-"""Configuration for the random walk engine."""
+"""Configuration and interface of the random walk engines."""
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 
+from ..core import Triple
 from ..exceptions import ConfigurationError
+from ..rule import PathStep
 
 DEFAULT_MAX_WALK_LENGTH: int = 5
 DEFAULT_MIN_WALK_LENGTH: int = 2
@@ -15,15 +18,12 @@ EMPTY_RELATION: str = ""
 
 
 class WalkStrategy(StrEnum):
-    """Strategy for selecting the next edge during a random walk.
+    """Which outgoing edge types are candidates at each walk step.
 
     Attributes
     ----------
     UNIFORM : str
-        Select uniformly at random among all outgoing edges.
-    RELATION_WEIGHTED : str
-        Weight edges by inverse frequency of their relation type,
-        favoring rarer relations to discover more diverse rules.
+        Every outgoing edge type is a candidate.
     REACHABILITY_PRUNED : str
         Like ``UNIFORM``, but only among edge types whose destination node
         type can still reach the walk's target type within the remaining
@@ -32,7 +32,6 @@ class WalkStrategy(StrEnum):
     """
 
     UNIFORM = "uniform"
-    RELATION_WEIGHTED = "relation_weighted"
     REACHABILITY_PRUNED = "reachability_pruned"
 
 
@@ -106,3 +105,11 @@ class WalkConfig:
             raise ConfigurationError(
                 f"max_attempts must be positive, got {self.max_attempts}"
             )
+
+
+class PathWalker(Protocol):
+    """Produces walk paths connecting a triple's endpoints."""
+
+    def walk_from_triple(self, triple: Triple) -> list[list[PathStep]]:
+        """Return paths from the triple's head to its tail."""
+        ...

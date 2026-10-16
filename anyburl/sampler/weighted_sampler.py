@@ -4,9 +4,10 @@ import torch
 from torch import Tensor
 
 from .._logging import get_logger
+from ..core import Triple
 from ..exceptions import ConfigurationError
 from ..graph import HeteroGraph
-from .base import BaseTripleSampler, SamplerConfig, Triple
+from .base import BaseTripleSampler, SamplerConfig
 
 logger = get_logger(__name__)
 

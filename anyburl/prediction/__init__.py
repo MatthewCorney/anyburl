@@ -1,6 +1,7 @@
 """Rule application: ground learned rules and score candidate entities."""
 
-from .grounding import GroundingMode
+from .evidence import RuleEvidence
+from .multi import MultiRelationPredictor
 from .predictor import RulePredictor
 from .records import (
     AcyclicEvidence,
@@ -10,17 +11,18 @@ from .records import (
     RuleFiring,
     format_chain,
 )
-from .scoring import ConfidenceAggregation, ScoringStrategy
+from .scoring import ConfidenceAggregation, GroundingWeighting
 
 __all__ = [
     "AcyclicEvidence",
     "ChainEvidence",
     "ConfidenceAggregation",
-    "GroundingMode",
+    "GroundingWeighting",
+    "MultiRelationPredictor",
     "Prediction",
     "PredictionConfig",
+    "RuleEvidence",
     "RuleFiring",
     "RulePredictor",
-    "ScoringStrategy",
     "format_chain",
 ]

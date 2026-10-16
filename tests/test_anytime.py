@@ -8,13 +8,13 @@ from anyburl.anytime import (
     AnytimeConfig,
     AnytimeLearner,
     MiningStages,
-    PathWalker,
 )
+from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleEvaluator
 from anyburl.rule import PathStep, RuleConfig, RuleGeneralizer
-from anyburl.sampler import Triple
+from anyburl.walk import PathWalker
 
 TARGET = Triple(
     head_id=0, tail_id=1, head_type="person", tail_type="city", relation="lives_in"
@@ -44,7 +44,7 @@ def _stages(
     return MiningStages(
         sample_batch=lambda index: list(batch),
         walker_for_length=lambda length: walker,
-        generalizer=RuleGeneralizer(config),
+        generalizer=RuleGeneralizer(),
         evaluator=RuleEvaluator(graph, config),
     )
 
@@ -158,7 +158,6 @@ def test_report_describes_the_run(
     ("kwargs", "message"),
     [
         ({"total_seconds": 0.0}, "total_seconds must be positive"),
-        ({"batch_size": 0}, "batch_size must be positive"),
         ({"min_length": 0}, "min_length must be positive"),
         ({"min_length": 4, "max_length": 2}, "is below min_length"),
         ({"saturation": 1.5}, "saturation must be in"),

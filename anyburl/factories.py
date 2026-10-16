@@ -13,13 +13,7 @@ from .sampler import (
     UniformTripleSampler,
     WeightedTripleSampler,
 )
-from .walk import (
-    NumbaWalkEngine,
-    RelationWeightedEdgeSelector,
-    WalkConfig,
-    WalkEngine,
-    WalkStrategy,
-)
+from .walk import NumbaWalkEngine, PathWalker, WalkConfig
 
 __all__ = ["build_triple_sampler", "build_walk_engine"]
 
@@ -68,11 +62,8 @@ def _non_empty_edge_counts(graph: HeteroGraph) -> torch.Tensor:
 def build_walk_engine(
     graph: HeteroGraph,
     config: WalkConfig,
-) -> WalkEngine | NumbaWalkEngine:
-    """Build a walk engine for the configured strategy.
-
-    Uniform and reachability-pruned walks use :class:`NumbaWalkEngine`;
-    relation-weighted walks use :class:`WalkEngine`.
+) -> PathWalker:
+    """Build a walk engine for the configured strategy and edge weighting.
 
     Parameters
     ----------
@@ -83,15 +74,7 @@ def build_walk_engine(
 
     Returns
     -------
-    WalkEngine | NumbaWalkEngine
+    PathWalker
         A walk engine instance.
     """
-    match config.strategy:
-        case WalkStrategy.UNIFORM | WalkStrategy.REACHABILITY_PRUNED:
-            return NumbaWalkEngine(graph, config)
-        case WalkStrategy.RELATION_WEIGHTED:
-            generator = torch.Generator().manual_seed(config.seed)
-            selector = RelationWeightedEdgeSelector(graph, generator)
-            return WalkEngine(graph, config, selector)
-        case _ as unreachable:
-            assert_never(unreachable)
+    return NumbaWalkEngine(graph, config)

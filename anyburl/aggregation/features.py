@@ -8,13 +8,13 @@ and ``LOG_DEGREE`` alone can express the fixed popularity discount
 """
 
 from enum import StrEnum
-from typing import Protocol, assert_never
+from typing import Protocol
 
 import torch
 from torch import Tensor
 
-from ..evaluation import QueryDirection
-from ..prediction import ChainEvidence, RulePredictor, format_chain
+from ..core import QueryDirection
+from ..prediction import ChainEvidence, RuleEvidence, format_chain
 from ..stratification import RelationDegrees
 
 __all__ = [
@@ -130,18 +130,18 @@ class QueryFeaturizer(Protocol):
 
 
 class CandidateFeaturizer:
-    """Builds per-candidate features for queries against a fitted predictor.
+    """Builds per-candidate features from one relation's rule evidence.
 
     Parameters
     ----------
-    predictor : RulePredictor
+    evidence : RuleEvidence
         Rules grounded on the graph the features describe.
     degrees : RelationDegrees
         Training degrees of the target relation in that same graph.
     """
 
-    def __init__(self, predictor: RulePredictor, degrees: RelationDegrees) -> None:
-        self._predictor = predictor
+    def __init__(self, evidence: RuleEvidence, degrees: RelationDegrees) -> None:
+        self._evidence = evidence
         self._degrees = degrees
 
     @property
@@ -159,7 +159,7 @@ class CandidateFeaturizer:
         """
         chain_names = tuple(
             f"chain[{rule_type.value}]: {format_chain(chain)}"
-            for chain, rule_type in self._predictor.chains
+            for chain, rule_type in self._evidence.chains
         )
         return (*(feature.value for feature in CandidateFeature), *chain_names)
 
@@ -179,15 +179,5 @@ class CandidateFeaturizer:
         Tensor
             ``(num_candidates, num_features)`` features.
         """
-        evidence = self._predictor.chain_evidence(direction, query_id)
-        return build_features(evidence, self._candidate_degrees(direction))
-
-    def _candidate_degrees(self, direction: QueryDirection) -> Tensor:
-        """Return the degrees of the entities ``direction`` ranks."""
-        match direction:
-            case QueryDirection.TAIL:
-                return self._degrees.tail
-            case QueryDirection.HEAD:
-                return self._degrees.head
-            case _ as unreachable:
-                assert_never(unreachable)
+        evidence = self._evidence.chain_evidence(direction, query_id)
+        return build_features(evidence, self._degrees.of_candidates(direction))

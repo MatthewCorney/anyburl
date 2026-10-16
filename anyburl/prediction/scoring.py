@@ -6,24 +6,17 @@ from typing import assert_never
 import torch
 from torch import Tensor
 
-from ..metrics import RuleMetrics
-
 __all__ = [
     "GROUNDING_WEIGHT_OFFSET",
-    "NO_UNSEEN_NEGATIVES",
     "TIE_BREAK_WEIGHT",
     "ConfidenceAggregation",
-    "ScoringStrategy",
-    "corrected_confidence",
+    "GroundingWeighting",
     "evidence_weights",
     "weight_for_candidate",
 ]
 
 GROUNDING_WEIGHT_OFFSET: float = 1.0
 """Offset in ``log2(offset + groundings)``, set so one grounding weighs 1.0."""
-
-NO_UNSEEN_NEGATIVES: int = 0
-"""Default unseen-negative count: score rules by their raw confidence."""
 
 TIE_BREAK_WEIGHT: float = 1e-4
 """Scale of the noisy-or term that breaks ties under maximum aggregation."""
@@ -47,56 +40,35 @@ class ConfidenceAggregation(StrEnum):
     MAXIMUM = "maximum"
 
 
-class ScoringStrategy(StrEnum):
-    """How a rule's confidence is weighted against a candidate.
+class GroundingWeighting(StrEnum):
+    """How the number of body groundings reaching a candidate weights a rule.
+
+    The values keep their original names so saved configurations and the
+    benchmark command line stay valid.
 
     Attributes
     ----------
-    NOISY_OR : str
+    ONCE : str
         Each firing rule contributes its confidence once, however many
         body groundings support the candidate.
-    PATH_WEIGHTED : str
+    LOG_COUNT : str
         A rule's confidence is weighted by ``log2(1 + groundings)``, so a
         candidate reached by many groundings outranks one reached by a
-        single grounding. A single grounding reproduces :attr:`NOISY_OR`.
+        single grounding. A single grounding reproduces :attr:`ONCE`.
     """
 
-    NOISY_OR = "noisy_or"
-    PATH_WEIGHTED = "path_weighted"
+    ONCE = "noisy_or"
+    LOG_COUNT = "path_weighted"
 
 
-def corrected_confidence(metrics: RuleMetrics, unseen_negatives: int) -> float:
-    """Return a rule's confidence with ``unseen_negatives`` added to its predictions.
-
-    ``support / (num_predictions + unseen_negatives)`` shrinks rules that made
-    few predictions, so a rule correct on 2 of 2 pairs no longer scores 1.0.
-
-    Parameters
-    ----------
-    metrics : RuleMetrics
-        The rule's evaluated metrics.
-    unseen_negatives : int
-        Assumed incorrect predictions added to the denominator.
-
-    Returns
-    -------
-    float
-        The corrected confidence; the raw confidence when
-        ``unseen_negatives`` is zero.
-    """
-    if unseen_negatives == NO_UNSEEN_NEGATIVES:
-        return metrics.confidence
-    return metrics.support / (metrics.num_predictions + unseen_negatives)
-
-
-def evidence_weights(groundings: Tensor, strategy: ScoringStrategy) -> Tensor:
+def evidence_weights(groundings: Tensor, weighting: GroundingWeighting) -> Tensor:
     """Convert body grounding counts into per-candidate evidence weights.
 
     Parameters
     ----------
     groundings : Tensor
         Number of body groundings supporting each candidate.
-    strategy : ScoringStrategy
+    weighting : GroundingWeighting
         The weighting scheme.
 
     Returns
@@ -104,10 +76,10 @@ def evidence_weights(groundings: Tensor, strategy: ScoringStrategy) -> Tensor:
     Tensor
         Weights parallel to ``groundings``.
     """
-    match strategy:
-        case ScoringStrategy.NOISY_OR:
+    match weighting:
+        case GroundingWeighting.ONCE:
             return torch.ones_like(groundings)
-        case ScoringStrategy.PATH_WEIGHTED:
+        case GroundingWeighting.LOG_COUNT:
             return torch.log2(GROUNDING_WEIGHT_OFFSET + groundings)
         case _ as unreachable:
             assert_never(unreachable)
@@ -116,7 +88,7 @@ def evidence_weights(groundings: Tensor, strategy: ScoringStrategy) -> Tensor:
 def weight_for_candidate(
     row: tuple[Tensor, Tensor],
     candidate_id: int,
-    strategy: ScoringStrategy,
+    weighting: GroundingWeighting,
 ) -> tuple[int, float] | None:
     """Return one candidate's grounding count and evidence weight, if reached.
 
@@ -126,7 +98,7 @@ def weight_for_candidate(
         Candidate indices and grounding counts from a chain grounding.
     candidate_id : int
         The candidate to look for.
-    strategy : ScoringStrategy
+    weighting : GroundingWeighting
         The weighting scheme.
 
     Returns
@@ -140,5 +112,5 @@ def weight_for_candidate(
     if position.numel() == 0:
         return None
     count = groundings[position[0]]
-    weight = evidence_weights(count.reshape(1), strategy)[0]
+    weight = evidence_weights(count.reshape(1), weighting)[0]
     return int(count.item()), float(weight.item())

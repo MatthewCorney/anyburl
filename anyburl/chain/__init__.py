@@ -4,7 +4,22 @@ Internal machinery used by :mod:`anyburl.metrics` and the walk engine; not part
 of the public API.
 """
 
+from .paths import PathCounter
 from .scanner import ChainScanner
-from .tables import CsrDirection, CsrTables, build_csr_tables
+from .tables import (
+    CsrDirection,
+    CsrTables,
+    build_csr_tables,
+    forward_csr_tables,
+    reverse_csr_tables,
+)
 
-__all__ = ["ChainScanner", "CsrDirection", "CsrTables", "build_csr_tables"]
+__all__ = [
+    "ChainScanner",
+    "CsrDirection",
+    "CsrTables",
+    "PathCounter",
+    "build_csr_tables",
+    "forward_csr_tables",
+    "reverse_csr_tables",
+]

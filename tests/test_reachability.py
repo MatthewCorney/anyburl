@@ -4,8 +4,8 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.core import Triple
 from anyburl.graph import HeteroGraph
-from anyburl.sampler import Triple
 from anyburl.walk import (
     EdgeWeighting,
     NumbaWalkEngine,

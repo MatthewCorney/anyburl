@@ -16,7 +16,8 @@ The learning process follows four stages:
 4. **Evaluate** --- :class:`RuleEvaluator` computes support, confidence and
    head coverage (:class:`RuleMetrics`) by counting body-chain groundings.
 
-Learned rules are applied by :class:`RulePredictor` and scored with
+Learned rules are grounded into :class:`RuleEvidence`, combined into scores by
+:class:`RulePredictor` or a learned :class:`AggregatedScorer`, and scored with
 :class:`LinkPredictionEvaluator`; :func:`stratify_by_degree` breaks its
 per-query ranks down by how well-connected each target is.
 
@@ -30,6 +31,18 @@ References
    *IJCAI*.
 """
 
+from .aggregation import (
+    AggregatedScorer,
+    AggregatorConfig,
+    CandidateFeaturizer,
+    CandidateSampling,
+    KnownAnswers,
+    LinearAggregator,
+    SharedFeaturizer,
+    build_training_set,
+    concat_training_sets,
+    ranking_queries,
+)
 from .anytime import (
     AnytimeConfig,
     AnytimeLearner,
@@ -40,15 +53,22 @@ from .baselines import (
     MetaPathScorer,
     PopularityScorer,
     RandomScorer,
+    ZeroScorer,
+)
+from .core import (
+    BodyChain,
+    EdgeTypeTuple,
+    EntityScorer,
+    QueryDirection,
+    Triple,
 )
 from .evaluation import (
-    EntityScorer,
     EvaluationConfig,
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
-    QueryDirection,
     QueryRank,
     TieHandling,
+    rank_queries_by_edge_type,
     summarize_ranks,
 )
 from .exceptions import (
@@ -62,13 +82,11 @@ from .factories import (
     build_triple_sampler,
     build_walk_engine,
 )
-from .graph import (
-    EdgeTypeTuple,
-    HeteroGraph,
-)
+from .graph import HeteroGraph
 from .metrics import (
     RuleEvaluator,
     RuleMetrics,
+    RuleSet,
     aggregate_confidence,
 )
 from .pipeline import (
@@ -77,12 +95,13 @@ from .pipeline import (
 )
 from .prediction import (
     ConfidenceAggregation,
-    GroundingMode,
+    GroundingWeighting,
+    MultiRelationPredictor,
     Prediction,
     PredictionConfig,
+    RuleEvidence,
     RuleFiring,
     RulePredictor,
-    ScoringStrategy,
 )
 from .rule import (
     Atom,
@@ -100,7 +119,6 @@ from .sampler import (
     EntityBalancedTripleSampler,
     SamplerConfig,
     SamplingStrategy,
-    Triple,
     UniformTripleSampler,
     WeightedTripleSampler,
 )
@@ -122,11 +140,12 @@ from .walk import (
     EdgeWeighting,
     NumbaWalkEngine,
     WalkConfig,
-    WalkEngine,
     WalkStrategy,
 )
 
 __all__ = [
+    "AggregatedScorer",
+    "AggregatorConfig",
     "AnyBURL",
     "AnyBURLConfig",
     "AnyBURLError",
@@ -135,6 +154,9 @@ __all__ = [
     "AnytimeReport",
     "Atom",
     "BaseTripleSampler",
+    "BodyChain",
+    "CandidateFeaturizer",
+    "CandidateSampling",
     "ConfidenceAggregation",
     "ConfigurationError",
     "DegreeBucket",
@@ -144,14 +166,17 @@ __all__ = [
     "EntityScorer",
     "EvaluationConfig",
     "GraphSchemaError",
-    "GroundingMode",
+    "GroundingWeighting",
     "HeteroGraph",
     "InvalidRuleError",
     "InverseEdgeHandling",
+    "KnownAnswers",
     "LengthReport",
+    "LinearAggregator",
     "LinkPredictionEvaluator",
     "LinkPredictionMetrics",
     "MetaPathScorer",
+    "MultiRelationPredictor",
     "NotFittedError",
     "NumbaWalkEngine",
     "PathStep",
@@ -165,15 +190,17 @@ __all__ = [
     "Rule",
     "RuleConfig",
     "RuleEvaluator",
+    "RuleEvidence",
     "RuleFiring",
     "RuleGeneralizer",
     "RuleMetrics",
     "RulePredictor",
+    "RuleSet",
     "RuleThresholds",
     "RuleType",
     "SamplerConfig",
     "SamplingStrategy",
-    "ScoringStrategy",
+    "SharedFeaturizer",
     "SplitConfig",
     "StratificationConfig",
     "Term",
@@ -184,12 +211,16 @@ __all__ = [
     "UniformTripleSampler",
     "ValidationSplit",
     "WalkConfig",
-    "WalkEngine",
     "WalkStrategy",
     "WeightedTripleSampler",
+    "ZeroScorer",
     "aggregate_confidence",
+    "build_training_set",
     "build_triple_sampler",
     "build_walk_engine",
+    "concat_training_sets",
+    "rank_queries_by_edge_type",
+    "ranking_queries",
     "relation_degrees",
     "split_target_edges",
     "split_with_validation",

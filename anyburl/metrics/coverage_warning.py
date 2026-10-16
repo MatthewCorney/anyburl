@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 from .._logging import get_logger
 from ..rule import Rule, RuleConfig, RuleType
-from .rule_metrics import RuleMetrics
+from ..rule.quality import RuleMetrics
 
 __all__ = ["HeadCoverageWarning"]
 

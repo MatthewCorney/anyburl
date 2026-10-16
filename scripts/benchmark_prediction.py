@@ -18,11 +18,12 @@ from torch_geometric.datasets import DBLP
 from anyburl import (
     AnyBURL,
     AnyBURLConfig,
+    EvaluationConfig,
+    GroundingWeighting,
     PredictionConfig,
     RulePredictor,
     RuleType,
     SamplingStrategy,
-    ScoringStrategy,
     SplitConfig,
     TieHandling,
     split_target_edges,
@@ -85,7 +86,8 @@ def main() -> None:
     )
 
     t0 = time.perf_counter()
-    pipeline = AnyBURL(config).fit(train_data)
+    graph = HeteroGraph(train_data)
+    pipeline = AnyBURL(config).fit(graph)
     fit_elapsed = time.perf_counter() - t0
     print(f"Pipeline fit: {fit_elapsed:.2f}s")
     print(f"  Rules passing filter: {len(pipeline.results)}")
@@ -94,8 +96,6 @@ def main() -> None:
     if not pipeline.results:
         print("No rules found, cannot benchmark prediction.")
         return
-
-    graph = HeteroGraph(train_data)
 
     t0 = time.perf_counter()
     predictor = RulePredictor(graph, pipeline.results)
@@ -160,13 +160,12 @@ def main() -> None:
         f"  {'scoring':<16} {'ties':<12} {'MRR':>8} {'H@1':>8} {'H@3':>8} {'H@10':>8}"
     )
     print(f"  {'-' * 16} {'-' * 12} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}")
-    for scoring in ScoringStrategy:
+    for scoring in GroundingWeighting:
         for ties in (TieHandling.OPTIMISTIC, TieHandling.AVERAGE):
             metrics = pipeline.evaluate_predictions(
                 test_triples,
-                k_values=K_VALUES,
-                tie_handling=ties,
-                prediction=PredictionConfig(scoring_strategy=scoring),
+                evaluation=EvaluationConfig(k_values=K_VALUES, tie_handling=ties),
+                prediction=PredictionConfig(grounding_weighting=scoring),
             )
             hits = metrics.hits_at_k
             print(

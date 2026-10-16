@@ -1,16 +1,18 @@
-"""Centralized logging configuration for AnyBURL."""
+"""Logging and progress reporting for AnyBURL."""
 
 import logging
+from collections.abc import Collection, Iterator
+
+from tqdm import tqdm
 
 PACKAGE_LOGGER_NAME: str = "anyburl"
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Get a logger namespaced under ``anyburl``.
+    """Get the logger for a module of the ``anyburl`` package.
 
-    All loggers are children of the ``anyburl`` logger so that users
-    can configure logging for the entire package at once via
-    ``logging.getLogger("anyburl")``.
+    Loggers follow the module hierarchy, so ``logging.getLogger("anyburl")``
+    configures the whole package and ``"anyburl.metrics"`` one subpackage.
 
     Parameters
     ----------
@@ -20,7 +22,27 @@ def get_logger(name: str) -> logging.Logger:
     Returns
     -------
     logging.Logger
-        Configured logger instance.
+        The module's logger.
     """
-    short_name = name.rsplit(".", maxsplit=1)[-1]
-    return logging.getLogger(f"{PACKAGE_LOGGER_NAME}.{short_name}")
+    return logging.getLogger(name)
+
+
+def progress[T](items: Collection[T], *, desc: str) -> Iterator[T]:
+    """Iterate ``items`` with a progress bar on an interactive terminal.
+
+    The bar is hidden when output is not a terminal, such as a log file,
+    and when ``items`` is empty.
+
+    Parameters
+    ----------
+    items : Collection[T]
+        The items to iterate.
+    desc : str
+        Label shown beside the bar.
+
+    Returns
+    -------
+    Iterator[T]
+        The items, in order.
+    """
+    return iter(tqdm(items, desc=desc, disable=None if items else True))

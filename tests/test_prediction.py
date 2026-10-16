@@ -4,29 +4,23 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl.evaluation import QueryDirection
-from anyburl.exceptions import ConfigurationError, NotFittedError
+from anyburl.core import QueryDirection
+from anyburl.exceptions import ConfigurationError, GraphSchemaError, NotFittedError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
 from anyburl.pipeline import AnyBURL, AnyBURLConfig
 from anyburl.prediction import (
     ConfidenceAggregation,
-    GroundingMode,
+    GroundingWeighting,
     Prediction,
     PredictionConfig,
     RuleFiring,
     RulePredictor,
-    ScoringStrategy,
-    grounding,
 )
-from anyburl.prediction.grounding import (
-    MaterialisedChain,
-    OnDemandChain,
-    body_chain_key,
-    build_groundings,
-)
-from anyburl.prediction.scoring import TIE_BREAK_WEIGHT, corrected_confidence
+from anyburl.prediction.grounding import body_chain_key, build_groundings
+from anyburl.prediction.scoring import TIE_BREAK_WEIGHT
 from anyburl.rule import Atom, Rule, RuleType, Term
+from anyburl.rule.quality import corrected_confidence
 from tests.rules import (
     ac2_born_in,
     cyclic_born_in_near,
@@ -228,12 +222,12 @@ def multi_grounding_graph() -> HeteroGraph:
 
 
 def test_noisy_or_ignores_grounding_count(multi_grounding_graph: HeteroGraph) -> None:
-    """Under NOISY_OR a candidate is only reachable or not."""
+    """Under ONCE weighting a candidate is only reachable or not."""
     results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
     predictor = RulePredictor(
         multi_grounding_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.NOISY_OR),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.ONCE),
     )
 
     scores = predictor.score_tails(0)
@@ -249,7 +243,7 @@ def test_path_weighted_ranks_more_groundings_higher(
     predictor = RulePredictor(
         multi_grounding_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.PATH_WEIGHTED),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.LOG_COUNT),
     )
 
     scores = predictor.score_tails(0)
@@ -265,12 +259,12 @@ def test_path_weighted_matches_noisy_or_for_single_grounding(
     weighted = RulePredictor(
         multi_grounding_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.PATH_WEIGHTED),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.LOG_COUNT),
     ).score_tails(0)
     plain = RulePredictor(
         multi_grounding_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.NOISY_OR),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.ONCE),
     ).score_tails(0)
 
     assert weighted[3].item() == pytest.approx(plain[3].item())
@@ -284,87 +278,78 @@ def test_score_heads_is_path_weighted_too(
     predictor = RulePredictor(
         multi_grounding_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.PATH_WEIGHTED),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.LOG_COUNT),
     )
     plain = RulePredictor(
         multi_grounding_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.NOISY_OR),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.ONCE),
     )
 
     assert predictor.score_heads(2)[0].item() > plain.score_heads(2)[0].item()
 
 
-def _both_modes(
-    graph: HeteroGraph, results: list
-) -> tuple[RulePredictor, RulePredictor]:
-    """Return materialised and on-demand predictors over the same rules."""
-    return (
-        RulePredictor(
-            graph,
-            results,
-            config=PredictionConfig(grounding_mode=GroundingMode.MATERIALISED),
-        ),
-        RulePredictor(
-            graph,
-            results,
-            config=PredictionConfig(grounding_mode=GroundingMode.ON_DEMAND),
-        ),
-    )
+def _product(graph: HeteroGraph, chain: tuple) -> torch.Tensor:
+    """Return the dense product of a chain's adjacency matrices."""
+    product = graph.get_csr_matrix(chain[0]).to_dense()
+    for edge_type in chain[1:]:
+        product = product @ graph.get_csr_matrix(edge_type).to_dense()
+    return product
 
 
-def test_on_demand_score_tails_matches_materialised(
+def _dense(entries: tuple[torch.Tensor, torch.Tensor], size: int) -> torch.Tensor:
+    """Scatter ``(indices, counts)`` into a dense vector."""
+    dense = torch.zeros(size)
+    dense[entries[0]] = entries[1]
+    return dense
+
+
+@pytest.mark.parametrize(
+    "rule", [cyclic_born_in_near(), subject_grounded(0)], ids=["cyclic", "ac1"]
+)
+def test_grounding_matches_the_chain_product(
+    multi_grounding_graph: HeteroGraph, rule: Rule
+) -> None:
+    """Each row and column is the chain product's, path counts included."""
+    chain = body_chain_key(rule)
+    grounding = build_groundings(
+        multi_grounding_graph, [(rule, RuleMetrics(2, 0.5, 0.5, 4))]
+    )[chain]
+    product = _product(multi_grounding_graph, chain)
+
+    for head_id in range(product.size(0)):
+        row = grounding.row(head_id)
+        assert torch.equal(_dense(row, product.size(1)), product[head_id])
+        assert torch.equal(row[0], torch.sort(row[0]).values)
+    for tail_id in range(product.size(1)):
+        column = grounding.column(tail_id)
+        assert torch.equal(_dense(column, product.size(0)), product[:, tail_id])
+
+
+def test_grounding_preserves_path_counts(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
-    """Grounding per query must not change the scores, only the memory."""
+    """Path multiplicity must survive grounding, not just reachability."""
     results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
-    materialised, on_demand = _both_modes(multi_grounding_graph, results)
 
-    assert torch.allclose(materialised.score_tails(0), on_demand.score_tails(0))
-
-
-def test_on_demand_score_heads_matches_materialised(
-    multi_grounding_graph: HeteroGraph,
-) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
-    materialised, on_demand = _both_modes(multi_grounding_graph, results)
-
-    for tail_id in range(4):
-        assert torch.allclose(
-            materialised.score_heads(tail_id), on_demand.score_heads(tail_id)
-        )
-
-
-def test_on_demand_preserves_grounding_counts(
-    multi_grounding_graph: HeteroGraph,
-) -> None:
-    """Path multiplicity must survive vector propagation, not just reachability."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
-    _, on_demand = _both_modes(multi_grounding_graph, results)
-
-    scores = on_demand.score_tails(0)
+    scores = RulePredictor(multi_grounding_graph, results).score_tails(0)
 
     assert scores[2].item() > scores[3].item()
 
 
-def test_on_demand_matches_materialised_with_ac1_rules(
-    evaluator_graph: HeteroGraph, cyclic_rule: Rule
+def test_grounding_rejects_an_edge_type_missing_from_the_graph(
+    evaluator_graph: HeteroGraph,
 ) -> None:
-    """AC1 groups read the same grounding through a different direction."""
-    results = [
-        (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
-        (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
-    ]
-    materialised, on_demand = _both_modes(evaluator_graph, results)
+    person = Term.variable("X", node_type="person")
+    city = Term.variable("Y", node_type="city")
+    rule = Rule(
+        head=Atom(relation="lives_in", subject=person, object_=city),
+        body=(Atom(relation="visited", subject=person, object_=city),),
+        rule_type=RuleType.CYCLIC,
+    )
 
-    for person_id in range(4):
-        assert torch.allclose(
-            materialised.score_tails(person_id), on_demand.score_tails(person_id)
-        )
-    for city_id in range(3):
-        assert torch.allclose(
-            materialised.score_heads(city_id), on_demand.score_heads(city_id)
-        )
+    with pytest.raises(GraphSchemaError):
+        RulePredictor(evaluator_graph, [(rule, RuleMetrics(1, 0.5, 0.5, 2))])
 
 
 def test_explain_names_the_firing_chain(
@@ -488,62 +473,11 @@ def test_describe_disambiguates_shared_relation_names() -> None:
     assert "author_to_paper -> paper_to_author" in firing.describe()
 
 
-def test_auto_is_the_default_grounding_mode() -> None:
-    assert PredictionConfig().grounding_mode is GroundingMode.AUTO
-
-
-def test_auto_materialises_a_small_chain(
-    multi_grounding_graph: HeteroGraph,
-) -> None:
-    rule = cyclic_born_in_near()
-    results = [(rule, RuleMetrics(2, 0.5, 0.5, 4))]
-
-    groundings = build_groundings(multi_grounding_graph, results, GroundingMode.AUTO)
-
-    assert isinstance(groundings[body_chain_key(rule)], MaterialisedChain)
-
-
-def test_auto_grounds_per_query_when_over_budget(
-    multi_grounding_graph: HeteroGraph,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(grounding, "MAX_MATERIALISED_CHAIN_NNZ", 1)
-    rule = cyclic_born_in_near()
-    results = [(rule, RuleMetrics(2, 0.5, 0.5, 4))]
-
-    groundings = build_groundings(multi_grounding_graph, results, GroundingMode.AUTO)
-
-    assert isinstance(groundings[body_chain_key(rule)], OnDemandChain)
-
-
-@pytest.mark.parametrize("chain_budget", [1, grounding.MAX_MATERIALISED_CHAIN_NNZ])
-@pytest.mark.parametrize("mode", list(GroundingMode))
-def test_grounding_mode_does_not_change_scores(
-    multi_grounding_graph: HeteroGraph,
-    monkeypatch: pytest.MonkeyPatch,
-    mode: GroundingMode,
-    chain_budget: int,
-) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
-    reference = RulePredictor(
-        multi_grounding_graph,
-        results,
-        config=PredictionConfig(grounding_mode=GroundingMode.MATERIALISED),
-    ).score_tails(0)
-    monkeypatch.setattr(grounding, "MAX_MATERIALISED_CHAIN_NNZ", chain_budget)
-
-    scores = RulePredictor(
-        multi_grounding_graph, results, config=PredictionConfig(grounding_mode=mode)
-    ).score_tails(0)
-
-    assert torch.allclose(scores, reference)
-
-
-@pytest.mark.parametrize("scoring_strategy", list(ScoringStrategy))
+@pytest.mark.parametrize("grounding_weighting", list(GroundingWeighting))
 def test_chain_evidence_composes_into_the_score(
     evaluator_graph: HeteroGraph,
     cyclic_rule: Rule,
-    scoring_strategy: ScoringStrategy,
+    grounding_weighting: GroundingWeighting,
 ) -> None:
     """Per-chain contributions must noisy-or back into the predictor's score."""
     results = [
@@ -554,7 +488,7 @@ def test_chain_evidence_composes_into_the_score(
     predictor = RulePredictor(
         evaluator_graph,
         results,
-        config=PredictionConfig(scoring_strategy=scoring_strategy),
+        config=PredictionConfig(grounding_weighting=grounding_weighting),
     )
 
     for direction, query_ids, score in (
@@ -562,7 +496,7 @@ def test_chain_evidence_composes_into_the_score(
         (QueryDirection.HEAD, range(3), predictor.score_heads),
     ):
         for query_id in query_ids:
-            evidence = predictor.chain_evidence(direction, query_id)
+            evidence = predictor.evidence.chain_evidence(direction, query_id)
             composed = 1.0 - torch.prod(1.0 - evidence.contributions, dim=0)
             assert torch.allclose(composed, score(query_id), atol=1e-6)
 
@@ -587,7 +521,9 @@ def test_maximum_scores_strongest_chain_with_noisy_or_tie_break(
         (QueryDirection.HEAD, range(3), predictor.score_heads),
     ):
         for query_id in query_ids:
-            contributions = predictor.chain_evidence(direction, query_id).contributions
+            contributions = predictor.evidence.chain_evidence(
+                direction, query_id
+            ).contributions
             noisy_or = 1.0 - torch.prod(1.0 - contributions, dim=0)
             expected = contributions.max(dim=0).values + TIE_BREAK_WEIGHT * noisy_or
             assert torch.allclose(expected, score(query_id), atol=1e-6)
@@ -629,13 +565,13 @@ def test_maximum_keeps_one_strong_chain_above_many_weak_ones(
     noisy_or = RulePredictor(
         two_chain_graph,
         results,
-        config=PredictionConfig(scoring_strategy=ScoringStrategy.NOISY_OR),
+        config=PredictionConfig(grounding_weighting=GroundingWeighting.ONCE),
     ).score_tails(0)
     maximum = RulePredictor(
         two_chain_graph,
         results,
         config=PredictionConfig(
-            scoring_strategy=ScoringStrategy.NOISY_OR,
+            grounding_weighting=GroundingWeighting.ONCE,
             aggregation=ConfidenceAggregation.MAXIMUM,
         ),
     ).score_tails(0)
@@ -653,9 +589,9 @@ def test_chain_evidence_rows_follow_chains(
     ]
     predictor = RulePredictor(evaluator_graph, results)
 
-    evidence = predictor.chain_evidence(QueryDirection.TAIL, 0)
+    evidence = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0)
 
-    assert [rule_type for _, rule_type in predictor.chains] == [
+    assert [rule_type for _, rule_type in predictor.evidence.chains] == [
         RuleType.CYCLIC,
         RuleType.AC1,
     ]
@@ -669,7 +605,7 @@ def test_chain_evidence_reports_grounding_counts(
     results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
     predictor = RulePredictor(multi_grounding_graph, results)
 
-    groundings = predictor.chain_evidence(QueryDirection.TAIL, 0).groundings[0]
+    groundings = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0).groundings[0]
 
     assert groundings[2].item() == 2
     assert groundings[3].item() == 1
@@ -682,7 +618,7 @@ def test_chain_evidence_is_empty_without_scoring_rules(
     """AC2 rules are ignored, which can leave no chains at all."""
     predictor = RulePredictor(evaluator_graph, [(ac2_born_in(), metrics_with(0.5))])
 
-    evidence = predictor.chain_evidence(QueryDirection.TAIL, 0)
+    evidence = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0)
 
     assert evidence.contributions.shape == (0, evaluator_graph.node_count("city"))
 
@@ -729,7 +665,7 @@ def test_unseen_negatives_reorder_candidates(two_chain_graph: HeteroGraph) -> No
 
     def tail_scores(unseen_negatives: int) -> torch.Tensor:
         config = PredictionConfig(
-            scoring_strategy=ScoringStrategy.NOISY_OR,
+            grounding_weighting=GroundingWeighting.ONCE,
             aggregation=ConfidenceAggregation.MAXIMUM,
             unseen_negatives=unseen_negatives,
         )

@@ -1,6 +1,6 @@
 """Reference scorers that give a learned model's metrics a scale.
 
-Each scorer satisfies :class:`~anyburl.evaluation.EntityScorer`, so
+Each scorer satisfies :class:`~anyburl.core.EntityScorer`, so
 :class:`~anyburl.evaluation.LinkPredictionEvaluator` measures them exactly as
 it measures a fitted model.
 """
@@ -10,13 +10,16 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from .graph import EdgeTypeTuple, HeteroGraph, validate_chain
+from .chain import PathCounter
+from .core import EdgeTypeTuple
+from .graph import HeteroGraph, validate_chain
 from .stratification import relation_degrees
 
 __all__ = [
     "MetaPathScorer",
     "PopularityScorer",
     "RandomScorer",
+    "ZeroScorer",
 ]
 
 
@@ -43,6 +46,33 @@ class _Endpoints:
             num_heads=graph.node_count(src_type),
             num_tails=graph.node_count(dst_type),
         )
+
+
+class ZeroScorer:
+    """Scores every candidate zero, for a relation with no learned rules.
+
+    Every candidate ties, so a target's rank is set by the tie policy alone.
+
+    Parameters
+    ----------
+    graph : HeteroGraph
+        The knowledge graph.
+    target_edge_type : EdgeTypeTuple
+        The relation being predicted.
+    """
+
+    def __init__(self, graph: HeteroGraph, target_edge_type: EdgeTypeTuple) -> None:
+        self._endpoints = _Endpoints.of(graph, target_edge_type)
+
+    def score_tails(self, head_id: int) -> Tensor:
+        """Return zero for every candidate tail."""
+        del head_id
+        return torch.zeros(self._endpoints.num_tails)
+
+    def score_heads(self, tail_id: int) -> Tensor:
+        """Return zero for every candidate head."""
+        del tail_id
+        return torch.zeros(self._endpoints.num_heads)
 
 
 class RandomScorer:
@@ -126,26 +156,28 @@ class MetaPathScorer:
     ------
     InvalidRuleError
         If ``chain`` is empty or its edge types do not join end to end.
+    GraphSchemaError
+        If an edge type of ``chain`` is missing from, or empty in, ``graph``.
     """
 
     def __init__(self, graph: HeteroGraph, chain: tuple[EdgeTypeTuple, ...]) -> None:
         validate_chain(chain)
-        self._matrices = tuple(graph.get_csr_matrix(et) for et in chain)
+        self._chain = chain
+        self._counter = graph.cached(PathCounter)
+        self._counter.check(chain)
         self._num_heads = graph.node_count(chain[0][0])
         self._num_tails = graph.node_count(chain[-1][2])
 
     def score_tails(self, head_id: int) -> Tensor:
         """Return the number of chain paths from ``head_id`` to each tail."""
-        vector = torch.zeros(1, self._num_heads)
-        vector[0, head_id] = 1.0
-        for matrix in self._matrices:
-            vector = vector @ matrix
-        return vector.squeeze(0)
+        scores = torch.zeros(self._num_tails)
+        tails, counts = self._counter.from_source(self._chain, head_id)
+        scores[tails] = counts
+        return scores
 
     def score_heads(self, tail_id: int) -> Tensor:
         """Return the number of chain paths from each head to ``tail_id``."""
-        vector = torch.zeros(self._num_tails, 1)
-        vector[tail_id, 0] = 1.0
-        for matrix in reversed(self._matrices):
-            vector = matrix @ vector
-        return vector.squeeze(1)
+        scores = torch.zeros(self._num_heads)
+        heads, counts = self._counter.into_target(self._chain, tail_id)
+        scores[heads] = counts
+        return scores

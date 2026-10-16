@@ -17,13 +17,12 @@ from anyburl.aggregation import (
     column_of,
     ranking_queries,
 )
-from anyburl.evaluation import QueryDirection
+from anyburl.core import QueryDirection, Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
 from anyburl.prediction import RulePredictor
 from anyburl.rule import Rule
-from anyburl.sampler import Triple
 from anyburl.stratification import relation_degrees
 
 LIVES_IN = ("person", "lives_in", "city")
@@ -38,7 +37,9 @@ def featurizer(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> CandidateFeat
     predictor = RulePredictor(
         evaluator_graph, [(cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3))]
     )
-    return CandidateFeaturizer(predictor, relation_degrees(evaluator_graph, LIVES_IN))
+    return CandidateFeaturizer(
+        predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
+    )
 
 
 @pytest.fixture

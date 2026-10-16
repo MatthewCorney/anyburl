@@ -14,9 +14,9 @@ import torch
 from torch_geometric.data import HeteroData
 
 from ._logging import get_logger
+from .core import EdgeTypeTuple, Triple
 from .exceptions import ConfigurationError, GraphSchemaError
-from .graph import EdgeTypeTuple, mirrored_edge_type
-from .sampler import Triple
+from .graph import mirrored_edge_type
 
 logger = get_logger(__name__)
 

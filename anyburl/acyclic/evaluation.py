@@ -6,9 +6,10 @@ from typing import assert_never
 import numpy as np
 from numpy.typing import NDArray
 
-from ..graph import EdgeTypeTuple, HeteroGraph
-from ..rule import Atom, Rule, TermKind
-from .rule_metrics import RuleMetrics, metrics_from_counts
+from ..core import EdgeTypeTuple
+from ..graph import HeteroGraph
+from ..rule.model import Atom, Rule, TermKind
+from ..rule.quality import RuleMetrics, metrics_from_counts
 
 __all__ = ["AcyclicIndex", "acyclic_constant", "evaluate_acyclic"]
 

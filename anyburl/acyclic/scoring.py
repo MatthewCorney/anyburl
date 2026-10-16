@@ -8,11 +8,10 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from ..graph import EdgeTypeTuple
-from ..metrics import RuleMetrics
-from ..metrics.acyclic import AcyclicIndex, acyclic_constant
-from ..rule import Atom, Rule, RuleType
-from .scoring import corrected_confidence
+from ..core import EdgeTypeTuple
+from ..rule.model import Atom, Rule, RuleType
+from ..rule.quality import RuleMetrics, corrected_confidence
+from .evaluation import AcyclicIndex, acyclic_constant
 
 __all__ = ["AcyclicScorer", "Firings"]
 

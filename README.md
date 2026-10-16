@@ -12,19 +12,23 @@ with an underscore, and the `anyburl.chain` package, are internal.
 
 | Module | Responsibility |
 |--------|----------------|
+| `core` | Shared domain types: `Triple`, `EdgeTypeTuple`, `BodyChain`, `QueryDirection`, `EntityScorer` |
 | `pipeline` | `AnyBURL` and `AnyBURLConfig`: the end-to-end fit / predict / evaluate entry point |
 | `factories` | Build samplers and walk engines from their configs |
-| `graph` | `HeteroGraph` wrapper over PyG `HeteroData`, plus edge-type helpers |
+| `graph` | `HeteroGraph` wrapper over PyG `HeteroData`, its derived-index cache, and edge-type helpers |
 | `sampler/` | Target triple samplers |
-| `walk/` | Random walk engines (Numba kernel and reference torch engine) |
-| `rule/` | Rule representation (`model`), quality floors (`config`), path generalization (`generalizer`) |
-| `metrics/` | Rule quality metrics and the `RuleEvaluator` |
-| `chain/` | Internal engine counting body-chain groundings for evaluation |
-| `prediction/` | Applying rules: grounding, scoring and the `RulePredictor` |
+| `walk/` | The Numba random walk engine and the `PathWalker` protocol |
+| `rule/` | Rule representation (`model`), quality metrics (`quality`), quality floors (`config`), path generalization (`generalizer`) |
+| `metrics/` | The `RuleEvaluator` and `RuleSet` |
+| `acyclic/` | Length-one acyclic rules end to end: sampling, generalization, evaluation and scoring |
+| `chain/` | Internal engine counting body-chain groundings for evaluation and prediction |
+| `prediction/` | Applying rules: `RuleEvidence`, the fixed-aggregation `RulePredictor`, and `MultiRelationPredictor` |
+| `aggregation/` | A learned aggregator that ranks candidates from rule evidence |
 | `anytime` | Budgeted, length-by-length mining loop |
-| `evaluation` | Link prediction metrics (MRR, Hits@K) |
+| `evaluation` | Link prediction metrics (MRR, Hits@K), per relation |
 | `baselines` | Reference scorers for calibrating link prediction results |
-| `split` | Train/test splitting of a target relation |
+| `split`, `validation_split` | Train/validation/test splitting of a target relation |
+| `stratification` | Breaking ranks down by target degree |
 | `exceptions` | `AnyBURLError` hierarchy |
 
 ## Development Setup

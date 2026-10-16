@@ -3,8 +3,8 @@
 import torch
 
 from .._logging import get_logger
-from ..graph import EdgeTypeTuple
-from .base import BaseTripleSampler, Triple
+from ..core import EdgeTypeTuple, Triple
+from .base import BaseTripleSampler
 
 logger = get_logger(__name__)
 

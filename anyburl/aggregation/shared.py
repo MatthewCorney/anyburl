@@ -6,13 +6,12 @@ one model can be fitted across relations with different rules.
 """
 
 from enum import StrEnum
-from typing import assert_never
 
 import torch
 from torch import Tensor
 
-from ..evaluation import QueryDirection
-from ..prediction import AcyclicEvidence, ChainEvidence, RulePredictor
+from ..core import QueryDirection
+from ..prediction import AcyclicEvidence, ChainEvidence, RuleEvidence
 from ..rule import RuleType
 from ..stratification import RelationDegrees
 from .features import LOG_SCORE_FLOOR
@@ -126,20 +125,20 @@ def _max_of_type(
 
 
 class SharedFeaturizer:
-    """Builds relation-independent features against a fitted predictor.
+    """Builds relation-independent features from one relation's rule evidence.
 
     Parameters
     ----------
-    predictor : RulePredictor
+    evidence : RuleEvidence
         Rules grounded on the graph the features describe.
     degrees : RelationDegrees
         Training degrees of the target relation in that same graph.
     """
 
-    def __init__(self, predictor: RulePredictor, degrees: RelationDegrees) -> None:
-        self._predictor = predictor
+    def __init__(self, evidence: RuleEvidence, degrees: RelationDegrees) -> None:
+        self._evidence = evidence
         self._degrees = degrees
-        self._chain_types = tuple(rule_type for _, rule_type in predictor.chains)
+        self._chain_types = tuple(rule_type for _, rule_type in evidence.chains)
 
     @property
     def score_column(self) -> int:
@@ -167,18 +166,8 @@ class SharedFeaturizer:
             ``(num_candidates, len(SharedFeature))`` features.
         """
         return build_shared_features(
-            self._predictor.chain_evidence(direction, query_id),
+            self._evidence.chain_evidence(direction, query_id),
             self._chain_types,
-            self._predictor.acyclic_evidence(direction, query_id),
-            self._candidate_degrees(direction),
+            self._evidence.acyclic_evidence(direction, query_id),
+            self._degrees.of_candidates(direction),
         )
-
-    def _candidate_degrees(self, direction: QueryDirection) -> Tensor:
-        """Return the degrees of the entities ``direction`` ranks."""
-        match direction:
-            case QueryDirection.TAIL:
-                return self._degrees.tail
-            case QueryDirection.HEAD:
-                return self._degrees.head
-            case _ as unreachable:
-                assert_never(unreachable)

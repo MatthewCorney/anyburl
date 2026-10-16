@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..exceptions import InvalidRuleError
-from .config import RuleConfig
 from .model import Atom, PathStep, Rule, RuleType, Term, TermKind
 
 __all__ = ["RuleGeneralizer"]
@@ -30,15 +29,7 @@ class RuleGeneralizer:
     Given a path (a sequence of concrete entity-relation steps), the
     generalizer replaces entities with variables to produce AC1, AC2,
     and cyclic rules.
-
-    Parameters
-    ----------
-    config : RuleConfig
-        Configuration controlling generalization behavior.
     """
-
-    def __init__(self, config: RuleConfig) -> None:
-        self._config = config
 
     def generalize(
         self,

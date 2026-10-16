@@ -14,15 +14,15 @@ from typing import assert_never
 import torch
 from torch import Tensor
 
+from .core import EdgeTypeTuple, QueryDirection
 from .evaluation import (
     DEFAULT_K_VALUES,
     LinkPredictionMetrics,
-    QueryDirection,
     QueryRank,
     summarize_ranks,
 )
 from .exceptions import ConfigurationError
-from .graph import EdgeTypeTuple, HeteroGraph
+from .graph import HeteroGraph
 
 __all__ = [
     "DegreeBucket",
@@ -53,6 +53,16 @@ class RelationDegrees:
 
     head: Tensor
     tail: Tensor
+
+    def of_candidates(self, direction: QueryDirection) -> Tensor:
+        """Return the degrees of the entities a query in ``direction`` ranks."""
+        match direction:
+            case QueryDirection.TAIL:
+                return self.tail
+            case QueryDirection.HEAD:
+                return self.head
+            case _ as unreachable:
+                assert_never(unreachable)
 
     def of_target(self, query: QueryRank) -> int:
         """Return the degree of the entity ``query`` was asked to rank."""

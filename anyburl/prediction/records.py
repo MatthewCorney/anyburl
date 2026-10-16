@@ -4,10 +4,11 @@ from dataclasses import dataclass
 
 from torch import Tensor
 
+from ..core import BodyChain
 from ..exceptions import ConfigurationError
 from ..rule import RuleType
-from .grounding import BodyChainKey, GroundingMode
-from .scoring import NO_UNSEEN_NEGATIVES, ConfidenceAggregation, ScoringStrategy
+from ..rule.quality import NO_UNSEEN_NEGATIVES
+from .scoring import ConfidenceAggregation, GroundingWeighting
 
 __all__ = [
     "ChainEvidence",
@@ -18,12 +19,12 @@ __all__ = [
 ]
 
 
-def format_chain(chain: BodyChainKey) -> str:
+def format_chain(chain: BodyChain) -> str:
     """Spell a body chain with both endpoints of every edge type.
 
     Parameters
     ----------
-    chain : BodyChainKey
+    chain : BodyChain
         The edge types of a rule body, in order.
 
     Returns
@@ -36,15 +37,12 @@ def format_chain(chain: BodyChainKey) -> str:
 
 @dataclass(frozen=True, slots=True)
 class PredictionConfig:
-    """How a predictor scores candidates and grounds its chains.
+    """How a predictor weighs and combines rule evidence.
 
     Parameters
     ----------
-    scoring_strategy : ScoringStrategy
+    grounding_weighting : GroundingWeighting
         How rule confidences are weighted against a candidate.
-    grounding_mode : GroundingMode
-        Whether body chains are materialised, grounded per query, or chosen
-        between by size.
     aggregation : ConfidenceAggregation
         How the contributions of different body chains combine.
     unseen_negatives : int
@@ -57,8 +55,7 @@ class PredictionConfig:
         If ``unseen_negatives`` is negative.
     """
 
-    scoring_strategy: ScoringStrategy = ScoringStrategy.PATH_WEIGHTED
-    grounding_mode: GroundingMode = GroundingMode.AUTO
+    grounding_weighting: GroundingWeighting = GroundingWeighting.LOG_COUNT
     aggregation: ConfidenceAggregation = ConfidenceAggregation.NOISY_OR
     unseen_negatives: int = NO_UNSEEN_NEGATIVES
 
@@ -76,7 +73,7 @@ class RuleFiring:
 
     Parameters
     ----------
-    chain : BodyChainKey
+    chain : BodyChain
         Edge types of the body that fired.
     rule_type : RuleType
         Structural type of the rules in the firing group.
@@ -89,7 +86,7 @@ class RuleFiring:
         ``1 - (1 - confidence) ** weight``.
     """
 
-    chain: BodyChainKey
+    chain: BodyChain
     rule_type: RuleType
     confidence: float
     groundings: int
@@ -163,7 +160,7 @@ class AcyclicEvidence:
 class ChainEvidence:
     """Each body chain's separate contribution to every candidate of a query.
 
-    Rows follow :attr:`~anyburl.prediction.RulePredictor.chains`.
+    Rows follow :attr:`~anyburl.prediction.RuleEvidence.chains`.
 
     Parameters
     ----------

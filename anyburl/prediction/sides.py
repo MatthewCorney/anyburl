@@ -8,10 +8,12 @@ from typing import assert_never
 import torch
 from torch import Tensor
 
+from ..core import BodyChain
 from ..metrics import RuleMetrics, aggregate_confidence
 from ..rule import Rule, RuleType, TermKind
-from .grounding import BodyChainKey, ChainGrounding, body_chain_key
-from .scoring import ScoringStrategy, corrected_confidence, evidence_weights
+from ..rule.quality import corrected_confidence
+from .grounding import ChainGrounding, body_chain_key
+from .scoring import GroundingWeighting, evidence_weights
 
 __all__ = ["ChainSide", "apply_side", "build_chain_sides", "side_evidence"]
 
@@ -30,7 +32,7 @@ class ChainSide:
 
     Parameters
     ----------
-    chain : BodyChainKey
+    chain : BodyChain
         The body chain these rules share.
     rule_type : RuleType
         ``CYCLIC`` or ``AC1``.
@@ -44,7 +46,7 @@ class ChainSide:
         Aggregated confidence of AC1 rules grounded on each candidate.
     """
 
-    chain: BodyChainKey
+    chain: BodyChain
     rule_type: RuleType
     fetch: ChainFetch
     shared_confidence: float | None = None
@@ -77,7 +79,7 @@ def apply_side(
     complement: Tensor,
     side: ChainSide,
     query_id: int,
-    strategy: ScoringStrategy,
+    weighting: GroundingWeighting,
 ) -> None:
     """Fold one chain side's evidence into a noisy-or complement, in place.
 
@@ -89,13 +91,13 @@ def apply_side(
         The chain side to apply.
     query_id : int
         The entity being queried.
-    strategy : ScoringStrategy
+    weighting : GroundingWeighting
         How grounding counts weigh on each contribution.
     """
     candidates, groundings = side.fetch(query_id)
     if candidates.numel() == 0:
         return
-    weights = evidence_weights(groundings, strategy)
+    weights = evidence_weights(groundings, weighting)
 
     confidence = side.confidence_for(query_id)
     if confidence is not None:
@@ -118,7 +120,7 @@ def side_evidence(
     side: ChainSide,
     query_id: int,
     num_candidates: int,
-    strategy: ScoringStrategy,
+    weighting: GroundingWeighting,
 ) -> tuple[Tensor, Tensor]:
     """Return one chain side's contribution and grounding count per candidate.
 
@@ -130,7 +132,7 @@ def side_evidence(
         The entity being queried.
     num_candidates : int
         Number of candidate entities.
-    strategy : ScoringStrategy
+    weighting : GroundingWeighting
         How grounding counts weigh on each contribution.
 
     Returns
@@ -139,7 +141,7 @@ def side_evidence(
         Dense ``(num_candidates,)`` contributions and grounding counts.
     """
     complement = torch.ones(num_candidates)
-    apply_side(complement, side, query_id, strategy)
+    apply_side(complement, side, query_id, weighting)
     candidates, counts = side.fetch(query_id)
     groundings = torch.zeros(num_candidates)
     groundings[candidates] = counts.to(groundings.dtype)
@@ -150,20 +152,20 @@ def side_evidence(
 class _ChainConfidences:
     """Rule confidences collected per body chain, before aggregation."""
 
-    cyclic: dict[BodyChainKey, list[float]] = field(
+    cyclic: dict[BodyChain, list[float]] = field(
         default_factory=lambda: defaultdict(list)
     )
-    subject_grounded: dict[BodyChainKey, dict[int, list[float]]] = field(
+    subject_grounded: dict[BodyChain, dict[int, list[float]]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(list))
     )
-    object_grounded: dict[BodyChainKey, dict[int, list[float]]] = field(
+    object_grounded: dict[BodyChain, dict[int, list[float]]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(list))
     )
 
 
 def build_chain_sides(
     results: Sequence[tuple[Rule, RuleMetrics]],
-    groundings: Mapping[BodyChainKey, ChainGrounding],
+    groundings: Mapping[BodyChain, ChainGrounding],
     unseen_negatives: int,
 ) -> tuple[list[ChainSide], list[ChainSide]]:
     """Group rules by body chain into tail-scoring and head-scoring sides.
@@ -172,7 +174,7 @@ def build_chain_sides(
     ----------
     results : Sequence[tuple[Rule, RuleMetrics]]
         Rules with their metrics. AC2 and acyclic rules are ignored.
-    groundings : Mapping[BodyChainKey, ChainGrounding]
+    groundings : Mapping[BodyChain, ChainGrounding]
         Grounding per body chain.
     unseen_negatives : int
         Assumed incorrect predictions added to each rule's denominator.

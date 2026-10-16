@@ -209,15 +209,13 @@ def test_classify_rule(head: Atom, body: tuple[Atom, ...], expected: RuleType) -
 
 
 def test_generalize_empty_path_raises() -> None:
-    config = RuleConfig()
-    generalizer = RuleGeneralizer(config)
+    generalizer = RuleGeneralizer()
     with pytest.raises(InvalidRuleError, match="at least one step"):
         generalizer.generalize([], target_relation="r", head_type="A", tail_type="B")
 
 
 def test_generalize_2step_path_produces_three_rules() -> None:
-    config = RuleConfig()
-    generalizer = RuleGeneralizer(config)
+    generalizer = RuleGeneralizer()
     path = [(0, "person", "born_in"), (1, "city", "near"), (2, "city", "")]
 
     rules = generalizer.generalize(
@@ -235,8 +233,7 @@ def test_generalize_2step_path_produces_three_rules() -> None:
 
 def test_generalize_1step_same_relation_filters_tautological() -> None:
     """1-step path with target relation yields a tautological cyclic rule, filtered."""
-    config = RuleConfig()
-    generalizer = RuleGeneralizer(config)
+    generalizer = RuleGeneralizer()
     path = [(0, "person", "lives_in"), (1, "city", "")]
 
     rules = generalizer.generalize(
@@ -267,8 +264,7 @@ def test_is_tautological(body: tuple[Atom, ...], expected: bool) -> None:
 
 
 def test_generalize_keeps_same_edge_type_different_variables() -> None:
-    config = RuleConfig()
-    generalizer = RuleGeneralizer(config)
+    generalizer = RuleGeneralizer()
 
     path = [(0, "person", "lives_in"), (1, "city", "near"), (2, "city", "")]
 
@@ -288,7 +284,7 @@ def test_revisited_entity_gets_fresh_variable() -> None:
     The evaluator grounds bodies by edge type alone, so a repeated
     variable would be scored as though unconstrained.
     """
-    generalizer = RuleGeneralizer(RuleConfig())
+    generalizer = RuleGeneralizer()
     path = [
         (0, "author", "to"),
         (5, "paper", "to"),
@@ -310,7 +306,7 @@ def test_revisited_entity_gets_fresh_variable() -> None:
 
 def test_paths_differing_only_by_revisit_generalize_identically() -> None:
     """Revisit pattern must not split one chain into several scored rules."""
-    generalizer = RuleGeneralizer(RuleConfig())
+    generalizer = RuleGeneralizer()
     revisiting = [
         (0, "author", "to"),
         (5, "paper", "to"),
@@ -341,7 +337,7 @@ def test_paths_differing_only_by_revisit_generalize_identically() -> None:
 
 def test_walk_returning_to_head_still_yields_ac2() -> None:
     """A tail equal to the head binds the last position to X, giving AC2."""
-    generalizer = RuleGeneralizer(RuleConfig())
+    generalizer = RuleGeneralizer()
     path = [(0, "person", "knows"), (3, "person", "knows"), (0, "person", "")]
 
     rules = generalizer.generalize(

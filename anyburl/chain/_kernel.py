@@ -109,3 +109,81 @@ def scan_chain_rows(
             if head_marker[frontier[current, position]] == head_stamp:
                 support += 1
         out_support[i] = support
+
+
+@njit(cache=True)
+def count_chain_paths(
+    crow_all: np.ndarray,
+    col_all: np.ndarray,
+    crow_offsets: np.ndarray,
+    col_offsets: np.ndarray,
+    chain_edges: np.ndarray,
+    source: int,
+    counts: np.ndarray,
+    frontier: np.ndarray,
+    out_nodes: np.ndarray,
+    out_counts: np.ndarray,
+) -> int:
+    """Count the paths along a body chain from one source to every entity.
+
+    Each level carries, for every entity it reaches, the number of distinct
+    paths reaching it, so the final level holds one row of the chain's
+    adjacency-matrix product.
+
+    Parameters
+    ----------
+    crow_all, col_all, crow_offsets, col_offsets : np.ndarray
+        Concatenated graph CSR tables from
+        :func:`~anyburl.chain.tables.build_csr_tables`.
+    chain_edges : np.ndarray
+        Edge-type ids of the body chain, in order.
+    source : int
+        The entity the chain starts from.
+    counts : np.ndarray
+        ``(2, width)`` path-count scratch, all zero on entry and on return.
+    frontier : np.ndarray
+        ``(2, width)`` ping-pong buffer of each level's reached entities.
+    out_nodes, out_counts : np.ndarray
+        Written with the entities the chain reaches and their path counts.
+
+    Returns
+    -------
+    int
+        How many entries of ``out_nodes`` and ``out_counts`` were written.
+    """
+    current = 0
+    frontier[current, 0] = source
+    counts[current, source] = 1
+    size = 1
+
+    for level in range(chain_edges.shape[0]):
+        edge = chain_edges[level]
+        crow_base = crow_offsets[edge]
+        col_base = col_offsets[edge]
+        nxt = 1 - current
+        next_size = 0
+
+        for position in range(size):
+            node = frontier[current, position]
+            paths = counts[current, node]
+            counts[current, node] = 0
+            for slot in range(
+                crow_all[crow_base + node], crow_all[crow_base + node + 1]
+            ):
+                neighbour = col_all[col_base + slot]
+                if counts[nxt, neighbour] == 0:
+                    frontier[nxt, next_size] = neighbour
+                    next_size += 1
+                counts[nxt, neighbour] += paths
+
+        current = nxt
+        size = next_size
+        if size == 0:
+            return 0
+
+    for position in range(size):
+        node = frontier[current, position]
+        out_nodes[position] = node
+        out_counts[position] = counts[current, node]
+        counts[current, node] = 0
+    return size

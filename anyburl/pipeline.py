@@ -5,43 +5,45 @@ from dataclasses import dataclass, field
 from typing import Self
 
 from torch_geometric.data import HeteroData
-from tqdm import tqdm
 
-from ._logging import get_logger
+from ._logging import get_logger, progress
+from .acyclic import AcyclicStep, AcyclicStepSampler, generalize_acyclic
 from .anytime import (
     AnytimeConfig,
     AnytimeLearner,
     AnytimeReport,
     MiningStages,
-    PathWalker,
 )
+from .core import EdgeTypeTuple, Triple
 from .evaluation import (
-    DEFAULT_K_VALUES,
     EvaluationConfig,
-    LinkPredictionEvaluator,
     LinkPredictionMetrics,
-    TieHandling,
+    rank_queries_by_edge_type,
+    summarize_ranks,
 )
 from .exceptions import ConfigurationError, NotFittedError
 from .factories import build_triple_sampler, build_walk_engine
-from .graph import EdgeTypeTuple, HeteroGraph
-from .metrics import RuleEvaluator, RuleMetrics
-from .prediction import Prediction, PredictionConfig, RulePredictor
+from .graph import HeteroGraph
+from .metrics import RuleEvaluator, RuleMetrics, RuleSet
+from .prediction import MultiRelationPredictor, Prediction, PredictionConfig
 from .rule import (
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_MIN_HEAD_COVERAGE,
     DEFAULT_MIN_SUPPORT,
-    AcyclicStep,
     PathStep,
     Rule,
     RuleConfig,
     RuleGeneralizer,
     RuleThresholds,
     RuleType,
-    generalize_acyclic,
 )
-from .sampler import SamplerConfig, SamplingStrategy, Triple
-from .walk import AcyclicStepSampler, WalkConfig, WalkStrategy
+from .sampler import SamplerConfig, SamplingStrategy
+from .walk import (
+    EdgeWeighting,
+    PathWalker,
+    WalkConfig,
+    WalkStrategy,
+)
 from .walk.base import DEFAULT_MIN_WALK_LENGTH, DEFAULT_RANDOM_SEED
 
 __all__ = ["AnyBURL", "AnyBURLConfig"]
@@ -73,7 +75,9 @@ class AnyBURLConfig:
     max_walk_attempts : int
         Maximum walk attempts per triple before giving up.
     walk_strategy : WalkStrategy
-        Strategy for selecting the next step during walks.
+        Which edge types are candidates at each walk step.
+    edge_weighting : EdgeWeighting
+        How candidate edge types are weighted at each walk step.
     min_support : int
         Minimum support threshold for rule filtering.
     min_confidence : float
@@ -102,6 +106,7 @@ class AnyBURLConfig:
     min_walk_length: int = DEFAULT_MIN_WALK_LENGTH
     max_walk_attempts: int = DEFAULT_PIPELINE_MAX_WALK_ATTEMPTS
     walk_strategy: WalkStrategy = WalkStrategy.UNIFORM
+    edge_weighting: EdgeWeighting = EdgeWeighting.UNIFORM
 
     min_support: int = DEFAULT_MIN_SUPPORT
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
@@ -136,6 +141,7 @@ class AnyBURLConfig:
             min_length=min_length,
             max_attempts=self.max_walk_attempts,
             strategy=self.walk_strategy,
+            edge_weighting=self.edge_weighting,
             seed=self.seed,
         )
 
@@ -186,20 +192,21 @@ class AnyBURL:
         self.results: list[tuple[Rule, RuleMetrics]] = []
         self.report: AnytimeReport | None = None
 
-    def fit(self, data: HeteroData) -> Self:
+    def fit(self, data: HeteroData | HeteroGraph) -> Self:
         """Sample triples, walk, generalize and evaluate, in that order.
 
         Parameters
         ----------
-        data : HeteroData
-            A PyTorch Geometric heterogeneous graph.
+        data : HeteroData | HeteroGraph
+            The graph to mine. Pass a :class:`HeteroGraph` to share its
+            indices across several fits on the same graph.
 
         Returns
         -------
         AnyBURL
             ``self``, for method chaining.
         """
-        self.graph = HeteroGraph(data)
+        self.graph = _as_graph(data)
         self.triples = build_triple_sampler(
             self.graph, self.config.sampler_config()
         ).sample()
@@ -211,7 +218,9 @@ class AnyBURL:
         return self
 
     def fit_anytime(
-        self, data: HeteroData, anytime_config: AnytimeConfig | None = None
+        self,
+        data: HeteroData | HeteroGraph,
+        anytime_config: AnytimeConfig | None = None,
     ) -> Self:
         """Mine rules by increasing length within a wall-clock budget.
 
@@ -220,30 +229,38 @@ class AnyBURL:
 
         Parameters
         ----------
-        data : HeteroData
-            A PyTorch Geometric heterogeneous graph.
+        data : HeteroData | HeteroGraph
+            The graph to mine.
         anytime_config : AnytimeConfig | None
-            Budget and stopping rules. ``None`` uses this pipeline's batch
-            size, walk lengths and seed.
+            Budget, rule lengths and stopping rules. ``None`` uses the
+            default budget and this pipeline's walk lengths.
 
         Returns
         -------
         AnyBURL
             ``self``, for method chaining.
+
+        Raises
+        ------
+        ConfigurationError
+            If ``acyclic_samples_per_end`` is set; the anytime loop does not
+            mine acyclic rules.
         """
         cfg = self.config
+        if cfg.acyclic_samples_per_end != NO_ACYCLIC_SAMPLES:
+            raise ConfigurationError(
+                "fit_anytime does not mine acyclic rules; "
+                "set acyclic_samples_per_end=0 or use fit"
+            )
         if anytime_config is None:
             anytime_config = AnytimeConfig(
-                batch_size=cfg.sample_size,
-                min_length=cfg.min_walk_length,
-                max_length=cfg.max_walk_length,
-                seed=cfg.seed,
+                min_length=cfg.min_walk_length, max_length=cfg.max_walk_length
             )
 
-        self.graph = HeteroGraph(data)
+        self.graph = _as_graph(data)
         learner = AnytimeLearner(self._mining_stages(self.graph), anytime_config)
         self.results, self.report = learner.learn()
-        self.rules = [rule for rule, _ in self.results]
+        self.rules = list(learner.candidates)
         return self
 
     def predict(
@@ -264,38 +281,42 @@ class AnyBURL:
         Returns
         -------
         list[Prediction]
-            Predictions sorted by score descending.
+            Predictions of every relation with rules, sorted by score
+            descending.
 
         Raises
         ------
         NotFittedError
             If ``fit`` has not been called or produced no rules.
         """
-        return self._build_predictor(prediction).predict(filter_known=filter_known)
+        return self.predictor(prediction).predict(filter_known=filter_known)
 
     def evaluate_predictions(
         self,
         test_triples: Sequence[Triple],
         *,
-        k_values: tuple[int, ...] = DEFAULT_K_VALUES,
-        filter_known: bool = True,
-        tie_handling: TieHandling = TieHandling.AVERAGE,
+        evaluation: EvaluationConfig | None = None,
         prediction: PredictionConfig | None = None,
+        known: HeteroData | HeteroGraph | None = None,
     ) -> LinkPredictionMetrics:
         """Evaluate link prediction quality on test triples.
+
+        Each relation is ranked with its own rules; a relation without rules
+        scores every candidate zero.
 
         Parameters
         ----------
         test_triples : Sequence[Triple]
-            Test triples to evaluate.
-        k_values : tuple[int, ...]
-            Hits@K thresholds.
-        filter_known : bool
-            If ``True``, filter known triples when computing ranks.
-        tie_handling : TieHandling
-            How to rank a target tied with other candidates.
+            Test triples to evaluate, of any number of relations.
+        evaluation : EvaluationConfig | None
+            Hits@K thresholds, filtering and tie handling. ``None`` uses the
+            defaults.
         prediction : PredictionConfig | None
             Scoring and grounding settings. ``None`` uses the defaults.
+        known : HeteroData | HeteroGraph | None
+            The known triples to filter. The standard filtered setting uses
+            every known edge, including validation and test edges. ``None``
+            filters only the fitted graph's edges.
 
         Returns
         -------
@@ -307,29 +328,51 @@ class AnyBURL:
         NotFittedError
             If ``fit`` has not been called or produced no rules.
         """
-        predictor = self._build_predictor(prediction)
-        config = EvaluationConfig(
-            k_values=k_values,
-            filter_known=filter_known,
-            tie_handling=tie_handling,
+        predictor = self.predictor(prediction)
+        config = evaluation if evaluation is not None else EvaluationConfig()
+        known_graph = self._require_graph() if known is None else _as_graph(known)
+        ranks = rank_queries_by_edge_type(
+            predictor.scorer_for, known_graph, test_triples, config
         )
-        evaluator = LinkPredictionEvaluator(predictor, self._require_graph(), config)
-        return evaluator.evaluate(test_triples)
+        return summarize_ranks([query.rank for query in ranks], config.k_values)
+
+    @property
+    def rule_set(self) -> RuleSet:
+        """Return the rules that passed thresholds, with their metrics."""
+        return RuleSet.of(self.results)
+
+    def predictor(
+        self, prediction: PredictionConfig | None = None
+    ) -> MultiRelationPredictor:
+        """Return a predictor over the learned rules of every relation.
+
+        Parameters
+        ----------
+        prediction : PredictionConfig | None
+            Scoring and grounding settings. ``None`` uses the defaults.
+
+        Returns
+        -------
+        MultiRelationPredictor
+            Scores queries of any relation against the fitted graph.
+
+        Raises
+        ------
+        NotFittedError
+            If ``fit`` has not been called or produced no rules.
+        """
+        graph = self._require_graph()
+        if not self.results:
+            raise NotFittedError(
+                "No rules found. Call fit(data) first and ensure rules pass thresholds."
+            )
+        return MultiRelationPredictor(graph, self.rule_set, config=prediction)
 
     def _require_graph(self) -> HeteroGraph:
         """Return the graph, raising if ``fit`` has not been called."""
         if self.graph is None:
             raise NotFittedError("Pipeline must be fitted first. Call fit(data).")
         return self.graph
-
-    def _build_predictor(self, prediction: PredictionConfig | None) -> RulePredictor:
-        """Return a predictor over the learned rules."""
-        graph = self._require_graph()
-        if not self.results:
-            raise NotFittedError(
-                "No rules found. Call fit(data) first and ensure rules pass thresholds."
-            )
-        return RulePredictor(graph, self.results, config=prediction)
 
     def _mining_stages(self, graph: HeteroGraph) -> MiningStages:
         """Wire the per-batch collaborators the anytime loop drives."""
@@ -346,7 +389,7 @@ class AnyBURL:
         return MiningStages(
             sample_batch=sample_batch,
             walker_for_length=walker_for_length,
-            generalizer=RuleGeneralizer(cfg.rule_config()),
+            generalizer=RuleGeneralizer(),
             evaluator=RuleEvaluator(graph, cfg.rule_config()),
         )
 
@@ -359,7 +402,7 @@ class AnyBURL:
         walker = build_walk_engine(graph, walk_config)
         self.paths = [
             (path, triple)
-            for triple in tqdm(self.triples, desc="Building paths")
+            for triple in progress(self.triples, desc="Building paths")
             for path in walker.walk_from_triple(triple)
         ]
         logger.info(
@@ -379,17 +422,26 @@ class AnyBURL:
 
     def _generalize(self) -> None:
         """Generalize walk paths into deduplicated Horn rules."""
-        generalizer = RuleGeneralizer(self.config.rule_config())
-        unique: dict[str, Rule] = {}
+        generalizer = RuleGeneralizer()
+        unique: dict[Rule, None] = {}
         for step in self.acyclic_steps:
             for rule in generalize_acyclic(step):
-                unique.setdefault(str(rule), rule)
-        for path, triple in tqdm(self.paths, desc="Generalizing rules"):
+                unique.setdefault(rule, None)
+        for path, triple in progress(self.paths, desc="Generalizing rules"):
             for rule in generalizer.generalize(
                 path,
                 target_relation=triple.relation,
                 head_type=triple.head_type,
                 tail_type=triple.tail_type,
             ):
-                unique.setdefault(str(rule), rule)
-        self.rules = list(unique.values())
+                unique.setdefault(rule, None)
+        self.rules = list(unique)
+
+
+def _as_graph(data: HeteroData | HeteroGraph) -> HeteroGraph:
+    """Return ``data`` as a :class:`HeteroGraph`, wrapping it if needed."""
+    match data:
+        case HeteroGraph():
+            return data
+        case _:
+            return HeteroGraph(data)

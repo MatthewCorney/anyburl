@@ -6,21 +6,18 @@ from typing import assert_never
 
 import numpy as np
 from numpy.typing import NDArray
-from tqdm import tqdm
 
-from .._logging import get_logger
+from .._logging import get_logger, progress
+from ..acyclic.evaluation import AcyclicIndex, evaluate_acyclic
 from ..chain import ChainScanner
+from ..core import BodyChain, EdgeTypeTuple
 from ..exceptions import GraphSchemaError
-from ..graph import EdgeTypeTuple, HeteroGraph
+from ..graph import HeteroGraph
 from ..rule import Atom, Rule, RuleConfig, RuleType, TermKind
-from .acyclic import AcyclicIndex, evaluate_acyclic
+from ..rule.quality import NO_PREDICTIONS, RuleMetrics, metrics_from_counts
 from .coverage_warning import HeadCoverageWarning
-from .rule_metrics import NO_PREDICTIONS, RuleMetrics, metrics_from_counts
 
-__all__ = ["BodySignature", "RuleEvaluator"]
-
-BodySignature = tuple[EdgeTypeTuple, ...]
-"""Ordered edge types of a rule body; shared by rules with the same chain."""
+__all__ = ["RuleEvaluator"]
 
 logger = get_logger(__name__)
 
@@ -46,7 +43,7 @@ class RuleEvaluator:
         self._edge_type_set: frozenset[EdgeTypeTuple] = frozenset(graph.edge_types)
         self._coverage_warning = HeadCoverageWarning(config)
         self._scanner = ChainScanner(graph)
-        self._acyclic_index = AcyclicIndex(graph)
+        self._acyclic_index = graph.cached(AcyclicIndex)
 
     def evaluate(self, rule: Rule) -> RuleMetrics:
         """Compute quality metrics for a single rule.
@@ -140,7 +137,7 @@ class RuleEvaluator:
         ac1_rules = [r for r in rules if r.rule_type is RuleType.AC1]
         other_rules = [r for r in rules if r.rule_type is not RuleType.AC1]
 
-        for rule in tqdm(other_rules, desc="Evaluating rules", disable=not other_rules):
+        for rule in progress(other_rules, desc="Evaluating rules"):
             if rule not in metrics_by_rule:
                 metrics_by_rule[rule] = self.evaluate(rule)
 
@@ -161,14 +158,14 @@ class RuleEvaluator:
         out : dict[Rule, RuleMetrics]
             Destination mapping, updated in place.
         """
-        groups: dict[tuple[BodySignature, bool], list[Rule]] = defaultdict(list)
+        groups: dict[tuple[BodyChain, bool], list[Rule]] = defaultdict(list)
         for rule in rules:
             groups[(self._body_signature(rule), _is_subject_grounded(rule))].append(
                 rule
             )
 
-        for (_, is_subject_grounded), group in tqdm(
-            groups.items(), desc="Evaluating AC1 groups", disable=not groups
+        for (_, is_subject_grounded), group in progress(
+            groups.items(), desc="Evaluating AC1 groups"
         ):
             self._evaluate_ac1_group(
                 group, is_subject_grounded=is_subject_grounded, out=out
@@ -226,7 +223,7 @@ class RuleEvaluator:
 
     def _scan_ac1(
         self,
-        signature: BodySignature,
+        signature: BodyChain,
         head_et: EdgeTypeTuple,
         entities: NDArray[np.int64],
         *,
@@ -299,7 +296,7 @@ class RuleEvaluator:
         self._edge_type_of(rule.body[0])
         return evaluate_acyclic(rule, self._acyclic_index, self._graph)
 
-    def _body_signature(self, rule: Rule) -> BodySignature:
+    def _body_signature(self, rule: Rule) -> BodyChain:
         """Return the ordered edge types of a rule's body chain."""
         return tuple(self._edge_type_of(atom) for atom in rule.body)
 

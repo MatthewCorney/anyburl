@@ -13,9 +13,8 @@ from typing import assert_never
 import torch
 from torch import Tensor
 
-from ..evaluation import QueryDirection
+from ..core import QueryDirection, Triple
 from ..exceptions import ConfigurationError
-from ..sampler import Triple
 from .features import QueryFeaturizer
 
 __all__ = [

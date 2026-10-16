@@ -1,14 +1,14 @@
-"""Tests for WalkEngine."""
+"""Tests for walk configuration and the walk engine factory."""
 
 import pytest
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.factories import build_walk_engine
 from anyburl.graph import HeteroGraph
-from anyburl.sampler import Triple
-from anyburl.walk import WalkConfig, WalkStrategy
+from anyburl.walk import EdgeWeighting, WalkConfig
 
 
 @pytest.fixture
@@ -137,12 +137,12 @@ def test_walk_on_heterogeneous_graph(simple_graph: HeteroGraph) -> None:
         assert path[-1][2] == ""
 
 
-def test_build_walk_engine_relation_weighted(simple_graph: HeteroGraph) -> None:
+def test_build_walk_engine_inverse_frequency(simple_graph: HeteroGraph) -> None:
     config = WalkConfig(
         min_length=2,
         max_length=3,
         max_attempts=50,
-        strategy=WalkStrategy.RELATION_WEIGHTED,
+        edge_weighting=EdgeWeighting.INVERSE_FREQUENCY,
         seed=42,
     )
     engine = build_walk_engine(simple_graph, config)

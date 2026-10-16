@@ -2,7 +2,7 @@
 
 from torch import Tensor
 
-from ..evaluation import QueryDirection
+from ..core import QueryDirection
 from ..exceptions import ConfigurationError
 from .features import QueryFeaturizer
 from .model import LinearAggregator
@@ -13,7 +13,7 @@ __all__ = ["AggregatedScorer"]
 class AggregatedScorer:
     """Scores every candidate of a query with a learned aggregator.
 
-    Satisfies :class:`~anyburl.evaluation.EntityScorer`.
+    Satisfies :class:`~anyburl.core.EntityScorer`.
 
     Parameters
     ----------

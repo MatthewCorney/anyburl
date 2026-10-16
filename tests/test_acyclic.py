@@ -4,22 +4,19 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.acyclic import (
+    AcyclicStep,
+    AcyclicStepSampler,
+    WalkAnchor,
+    generalize_acyclic,
+)
+from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleEvaluator, RuleMetrics
 from anyburl.pipeline import AnyBURL, AnyBURLConfig
 from anyburl.prediction import RulePredictor
-from anyburl.rule import (
-    AcyclicStep,
-    Rule,
-    RuleConfig,
-    RuleType,
-    Term,
-    WalkAnchor,
-    generalize_acyclic,
-)
-from anyburl.sampler import Triple
-from anyburl.walk import AcyclicStepSampler
+from anyburl.rule import Rule, RuleConfig, RuleType, Term
 from tests.rules import object_constant_rule, subject_constant_near_rule
 
 LIVES_IN = ("person", "lives_in", "city")

@@ -7,8 +7,9 @@ from enum import StrEnum
 import torch
 from torch import Tensor
 
+from ..core import EdgeTypeTuple, Triple
 from ..exceptions import ConfigurationError, GraphSchemaError
-from ..graph import EdgeTypeTuple, HeteroGraph
+from ..graph import HeteroGraph
 
 DEFAULT_SAMPLE_SIZE: int = 1000
 DEFAULT_RANDOM_SEED: int = 42
@@ -84,31 +85,6 @@ class SamplerConfig:
                 f"target_edge_type must be a 3-tuple of strings, "
                 f"got {self.target_edge_type!r}"
             )
-
-
-@dataclass(frozen=True, slots=True)
-class Triple:
-    """A single target triple sampled from the knowledge graph.
-
-    Parameters
-    ----------
-    head_id : int
-        Source entity index.
-    tail_id : int
-        Destination entity index.
-    head_type : str
-        Node type of the source entity.
-    tail_type : str
-        Node type of the destination entity.
-    relation : str
-        The relation connecting head to tail.
-    """
-
-    head_id: int
-    tail_id: int
-    head_type: str
-    tail_type: str
-    relation: str
 
 
 class BaseTripleSampler(ABC):

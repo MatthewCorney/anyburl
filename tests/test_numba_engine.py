@@ -5,23 +5,16 @@ from itertools import pairwise
 import torch
 from torch_geometric.data import HeteroData
 
+from anyburl.core import Triple
 from anyburl.factories import build_walk_engine
 from anyburl.graph import HeteroGraph
-from anyburl.sampler import Triple
 from anyburl.walk import (
     NumbaWalkEngine,
-    UniformEdgeSelector,
     WalkConfig,
-    WalkEngine,
     WalkStrategy,
 )
 from anyburl.walk._numba_graph import build_numba_graph_view
-
-
-def _reference_engine(graph: HeteroGraph, config: WalkConfig) -> WalkEngine:
-    """Build the torch reference engine with a uniform selector."""
-    generator = torch.Generator().manual_seed(config.seed)
-    return WalkEngine(graph, config, UniformEdgeSelector(generator))
+from tests.reference_walker import ReferenceWalker
 
 
 def test_build_walk_engine_uniform_returns_numba(simple_graph: HeteroGraph) -> None:
@@ -63,8 +56,7 @@ def test_numba_matches_reference_when_saturated(simple_graph: HeteroGraph) -> No
     triple = Triple(0, 1, "person", "city", "lives_in")
 
     reference_paths = {
-        tuple(p)
-        for p in _reference_engine(simple_graph, config).walk_from_triple(triple)
+        tuple(p) for p in ReferenceWalker(simple_graph, config).walk_from_triple(triple)
     }
     numba_paths = {
         tuple(p) for p in NumbaWalkEngine(simple_graph, config).walk_from_triple(triple)

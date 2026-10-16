@@ -1,14 +1,20 @@
-"""Rule quality metrics and their noisy-or aggregation."""
+"""Rule quality metrics, their noisy-or aggregation and confidence correction."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 __all__ = [
     "NO_PREDICTIONS",
+    "NO_UNSEEN_NEGATIVES",
     "RuleMetrics",
     "aggregate_confidence",
+    "corrected_confidence",
     "metrics_from_counts",
 ]
+
+
+NO_UNSEEN_NEGATIVES: int = 0
+"""Default unseen-negative count: score rules by their raw confidence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,3 +131,27 @@ def metrics_from_counts(
         head_coverage=support / total_head_triples if total_head_triples > 0 else 0.0,
         num_predictions=num_predictions,
     )
+
+
+def corrected_confidence(metrics: RuleMetrics, unseen_negatives: int) -> float:
+    """Return a rule's confidence with ``unseen_negatives`` added to its predictions.
+
+    ``support / (num_predictions + unseen_negatives)`` shrinks rules that made
+    few predictions, so a rule correct on 2 of 2 pairs no longer scores 1.0.
+
+    Parameters
+    ----------
+    metrics : RuleMetrics
+        The rule's evaluated metrics.
+    unseen_negatives : int
+        Assumed incorrect predictions added to the denominator.
+
+    Returns
+    -------
+    float
+        The corrected confidence; the raw confidence when
+        ``unseen_negatives`` is zero.
+    """
+    if unseen_negatives == NO_UNSEEN_NEGATIVES:
+        return metrics.confidence
+    return metrics.support / (metrics.num_predictions + unseen_negatives)

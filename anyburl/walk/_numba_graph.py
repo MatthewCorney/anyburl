@@ -12,12 +12,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..chain.tables import build_csr_tables
+from ..chain.tables import forward_csr_tables
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-    from ..graph import EdgeTypeTuple, HeteroGraph
+    from ..core import EdgeTypeTuple
+    from ..graph import HeteroGraph
 
 NO_RELATION_ID: int = -1
 """Sentinel edge-type id marking the final step of a walk (empty relation)."""
@@ -84,7 +85,7 @@ def build_numba_graph_view(graph: HeteroGraph) -> NumbaGraphView:
     node_type_names = graph.node_types
     node_type_to_id = {name: i for i, name in enumerate(node_type_names)}
 
-    tables = build_csr_tables(graph)
+    tables = forward_csr_tables(graph)
     edge_types = list(tables.edge_type_to_id)
 
     node_out_edges, node_out_offsets = _build_outgoing_index(

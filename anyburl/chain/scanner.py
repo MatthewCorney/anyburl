@@ -13,14 +13,15 @@ import numpy as np
 from ..exceptions import InvalidRuleError
 from ..graph import mirrored_edge_type, validate_chain
 from ._kernel import FRONTIER_SLOTS, scan_chain_rows
-from .tables import CsrDirection, CsrTables, build_csr_tables
+from .tables import CsrTables, forward_csr_tables, reverse_csr_tables
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from numpy.typing import NDArray
 
-    from ..graph import EdgeTypeTuple, HeteroGraph
+    from ..core import EdgeTypeTuple
+    from ..graph import HeteroGraph
 
 __all__ = ["ChainScanner"]
 
@@ -36,8 +37,7 @@ class ChainScanner:
 
     def __init__(self, graph: HeteroGraph) -> None:
         self._graph = graph
-        self._tables = build_csr_tables(graph)
-        self._reverse_tables: CsrTables | None = None
+        self._tables = forward_csr_tables(graph)
         self._stamp_base = 0
 
     def scan_reversed_rows(
@@ -164,11 +164,7 @@ class ChainScanner:
 
     def _reverse(self) -> CsrTables:
         """Return the reverse tables, building them on first use."""
-        if self._reverse_tables is None:
-            self._reverse_tables = build_csr_tables(
-                self._graph, direction=CsrDirection.REVERSE
-            )
-        return self._reverse_tables
+        return reverse_csr_tables(self._graph)
 
     @staticmethod
     def _reversed(

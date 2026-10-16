@@ -5,13 +5,15 @@ import pytest
 import torch
 from torch_geometric.data import HeteroData
 
-from anyburl.chain import ChainScanner, build_csr_tables
-from anyburl.exceptions import InvalidRuleError
-from anyburl.graph import EdgeTypeTuple, HeteroGraph
+from anyburl.chain import ChainScanner, PathCounter, build_csr_tables
+from anyburl.core import EdgeTypeTuple
+from anyburl.exceptions import GraphSchemaError, InvalidRuleError
+from anyburl.graph import HeteroGraph
 
 BORN_IN = ("person", "born_in", "city")
 NEAR = ("city", "near", "city")
 LIVES_IN = ("person", "lives_in", "city")
+KNOWS = ("person", "knows", "person")
 
 
 def _reference_counts(
@@ -354,3 +356,37 @@ def test_reachability_of_a_chain_reaching_nothing() -> None:
     mask = ChainScanner(graph).reachable_sources((CROSS, ("b", "onward", "c")))
 
     assert not mask.any()
+
+
+class TestPathCounter:
+    @pytest.mark.parametrize(
+        "chain",
+        [
+            (KNOWS, KNOWS, LIVES_IN),
+            (NEAR, NEAR),
+            (LIVES_IN, NEAR, NEAR),
+        ],
+        ids=["knows-knows-lives_in", "near-near", "lives_in-near-near"],
+    )
+    def test_matches_the_dense_chain_product(
+        self, simple_graph: HeteroGraph, chain: tuple[EdgeTypeTuple, ...]
+    ) -> None:
+        product = simple_graph.get_csr_matrix(chain[0]).to_dense()
+        for edge_type in chain[1:]:
+            product = product @ simple_graph.get_csr_matrix(edge_type).to_dense()
+        counter = PathCounter(simple_graph)
+
+        for source in range(product.size(0)):
+            nodes, counts = counter.from_source(chain, source)
+            row = torch.zeros(product.size(1))
+            row[nodes] = counts
+            assert torch.equal(row, product[source])
+        for target in range(product.size(1)):
+            nodes, counts = counter.into_target(chain, target)
+            column = torch.zeros(product.size(0))
+            column[nodes] = counts
+            assert torch.equal(column, product[:, target])
+
+    def test_rejects_an_unknown_edge_type(self, simple_graph: HeteroGraph) -> None:
+        with pytest.raises(GraphSchemaError):
+            PathCounter(simple_graph).check((("person", "visited", "city"),))

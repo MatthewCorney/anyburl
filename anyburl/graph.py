@@ -1,10 +1,11 @@
 """HeteroGraph wrapper over PyG HeteroData with CSR-backed operations."""
 
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import pairwise
+from typing import cast
 
 import torch
 from torch import Tensor
@@ -12,12 +13,10 @@ from torch_geometric.data import HeteroData
 from torch_geometric.utils import to_torch_csr_tensor
 
 from ._logging import get_logger
+from .core import EdgeTypeTuple
 from .exceptions import GraphSchemaError, InvalidRuleError
 
 logger = get_logger(__name__)
-
-EdgeTypeTuple = tuple[str, str, str]
-"""(source_node_type, relation, destination_node_type)."""
 
 SPARSE_CSR_WARNING_PATTERN: str = ".*Sparse CSR tensor support.*"
 """Message of torch's beta warning emitted by every sparse CSR operation."""
@@ -98,7 +97,8 @@ class HeteroGraph:
     """Wraps a PyG ``HeteroData`` with precomputed CSR indices.
 
     Provides neighbor lookup, per-edge-type CSR matrices and node and edge
-    counts.
+    counts, and caches the structures other components derive from it, so
+    every component working on one graph shares them.
 
     Parameters
     ----------
@@ -157,6 +157,7 @@ class HeteroGraph:
             self._outgoing_edge_types[node_type] = matching
 
         self._csr_matrix_cache: dict[EdgeTypeTuple, Tensor] = {}
+        self._derived: dict[Callable[[HeteroGraph], object], object] = {}
 
         logger.debug(
             "Built HeteroGraph: %d node types, %d edge types, %d total edges",
@@ -164,6 +165,27 @@ class HeteroGraph:
             len(self._csr_index),
             sum(self._edge_counts.values()),
         )
+
+    def cached[T](self, build: Callable[["HeteroGraph"], T]) -> T:
+        """Return ``build(self)``, computing it only on the first request.
+
+        The graph is immutable, so anything built purely from it can be
+        shared by every component that works on it.
+
+        Parameters
+        ----------
+        build : Callable[[HeteroGraph], T]
+            A pure function of the graph. It is also the cache key, so pass
+            the same function object each time.
+
+        Returns
+        -------
+        T
+            The cached structure.
+        """
+        if build not in self._derived:
+            self._derived[build] = build(self)
+        return cast("T", self._derived[build])
 
     def get_neighbors(self, node_id: int, edge_type: EdgeTypeTuple) -> Tensor:
         """Return neighbor IDs reachable from ``node_id`` via ``edge_type``.

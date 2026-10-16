@@ -14,8 +14,8 @@ from ._reachability import MAX_TRACKED_STEPS, build_step_tables
 from .base import EMPTY_RELATION, EdgeWeighting, WalkConfig, WalkStrategy
 
 if TYPE_CHECKING:
+    from ..core import Triple
     from ..graph import HeteroGraph
-    from ..sampler import Triple
 
 logger = get_logger(__name__)
 
@@ -23,10 +23,8 @@ logger = get_logger(__name__)
 class NumbaWalkEngine:
     """Runs random walks via a JIT-compiled kernel over integer arrays.
 
-    Supports :attr:`WalkStrategy.UNIFORM` and
-    :attr:`WalkStrategy.REACHABILITY_PRUNED` with either
-    :class:`EdgeWeighting`, and exposes the same ``walk_from_triple`` method
-    as :class:`~anyburl.walk.WalkEngine`.
+    Supports every :class:`WalkStrategy` with either :class:`EdgeWeighting`,
+    and satisfies :class:`~anyburl.walk.PathWalker`.
 
     Parameters
     ----------
@@ -38,7 +36,7 @@ class NumbaWalkEngine:
 
     def __init__(self, graph: HeteroGraph, config: WalkConfig) -> None:
         self._config = config
-        self._view = build_numba_graph_view(graph)
+        self._view = graph.cached(build_numba_graph_view)
         self._steps = build_step_tables(
             self._view,
             prune=config.strategy is WalkStrategy.REACHABILITY_PRUNED,

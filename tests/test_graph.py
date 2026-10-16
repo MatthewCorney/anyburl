@@ -142,3 +142,23 @@ def test_mirrored_edge_type_swaps_endpoints() -> None:
         "lives_in",
         "person",
     )
+
+
+class TestCached:
+    def test_builds_once_and_shares_result(self, simple_graph: HeteroGraph) -> None:
+        calls: list[HeteroGraph] = []
+
+        def build(graph: HeteroGraph) -> list[int]:
+            calls.append(graph)
+            return [graph.total_edge_count()]
+
+        first = simple_graph.cached(build)
+        second = simple_graph.cached(build)
+
+        assert first is second
+        assert calls == [simple_graph]
+
+    def test_distinct_builders_are_cached_separately(
+        self, simple_graph: HeteroGraph
+    ) -> None:
+        assert simple_graph.cached(lambda g: "a") != simple_graph.cached(lambda g: "b")

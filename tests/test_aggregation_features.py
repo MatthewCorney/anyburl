@@ -7,7 +7,7 @@ import torch
 
 from anyburl.aggregation import CandidateFeature, CandidateFeaturizer, build_features
 from anyburl.aggregation.features import LOG_SCORE_FLOOR
-from anyburl.evaluation import QueryDirection
+from anyburl.core import QueryDirection
 from anyburl.graph import HeteroGraph
 from anyburl.metrics import RuleMetrics
 from anyburl.prediction import ChainEvidence, RulePredictor
@@ -101,7 +101,7 @@ class TestCandidateFeaturizer:
         self, evaluator_graph: HeteroGraph, predictor: RulePredictor
     ) -> CandidateFeaturizer:
         return CandidateFeaturizer(
-            predictor, relation_degrees(evaluator_graph, LIVES_IN)
+            predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
         )
 
     def test_rule_score_column_matches_predictor(

@@ -3,9 +3,9 @@
 import numpy as np
 from numpy.typing import NDArray
 
-from ..graph import EdgeTypeTuple, HeteroGraph, mirrored_edge_type
-from ..rule import AcyclicStep, WalkAnchor
-from ..sampler import Triple
+from ..core import EdgeTypeTuple, Triple
+from ..graph import HeteroGraph, mirrored_edge_type
+from .generalization import AcyclicStep, WalkAnchor
 
 __all__ = ["AcyclicStepSampler"]
 

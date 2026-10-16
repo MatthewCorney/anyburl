@@ -3,7 +3,8 @@
 import torch
 
 from .._logging import get_logger
-from .base import BaseTripleSampler, Triple
+from ..core import Triple
+from .base import BaseTripleSampler
 
 logger = get_logger(__name__)
 

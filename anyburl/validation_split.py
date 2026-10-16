@@ -13,8 +13,8 @@ from dataclasses import dataclass, replace
 from torch_geometric.data import HeteroData
 
 from ._logging import get_logger
+from .core import Triple
 from .exceptions import ConfigurationError
-from .sampler import Triple
 from .split import SplitConfig, split_target_edges
 
 logger = get_logger(__name__)

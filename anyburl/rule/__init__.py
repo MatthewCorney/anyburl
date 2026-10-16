@@ -1,6 +1,5 @@
-"""Horn rules: their representation, quality floors and generalization."""
+"""Horn rules: their representation, quality floors and path generalization."""
 
-from .acyclic import AcyclicStep, WalkAnchor, generalize_acyclic
 from .config import (
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_MIN_HEAD_COVERAGE,
@@ -15,7 +14,6 @@ __all__ = [
     "DEFAULT_MIN_CONFIDENCE",
     "DEFAULT_MIN_HEAD_COVERAGE",
     "DEFAULT_MIN_SUPPORT",
-    "AcyclicStep",
     "Atom",
     "PathStep",
     "Rule",
@@ -25,6 +23,4 @@ __all__ = [
     "RuleType",
     "Term",
     "TermKind",
-    "WalkAnchor",
-    "generalize_acyclic",
 ]

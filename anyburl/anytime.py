@@ -10,13 +10,13 @@ usable whenever the run stops.
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
 
 from ._logging import get_logger
+from .core import Triple
 from .exceptions import ConfigurationError
 from .metrics import RuleEvaluator, RuleMetrics
 from .rule import PathStep, Rule, RuleGeneralizer
-from .sampler import Triple
+from .walk import PathWalker
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,6 @@ __all__ = [
     "AnytimeReport",
     "LengthReport",
     "MiningStages",
-    "PathWalker",
 ]
 
 DEFAULT_TOTAL_SECONDS: float = 10.0
@@ -35,19 +34,9 @@ DEFAULT_TOTAL_SECONDS: float = 10.0
 DEFAULT_SATURATION: float = 0.01
 """New-rule fraction below which a length is considered exhausted."""
 
-DEFAULT_BATCH_SIZE: int = 500
 DEFAULT_MIN_RULE_LENGTH: int = 2
 DEFAULT_MAX_RULE_LENGTH: int = 4
 DEFAULT_MIN_BATCHES_PER_LENGTH: int = 1
-DEFAULT_SEED: int = 42
-
-
-class PathWalker(Protocol):
-    """Produces walk paths connecting a triple's endpoints."""
-
-    def walk_from_triple(self, triple: Triple) -> list[list[PathStep]]:
-        """Return paths from the triple's head to its tail."""
-        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +48,6 @@ class AnytimeConfig:
     total_seconds : float
         Wall-clock budget for the whole run. Checked between batches, so a
         single slow batch may overrun it.
-    batch_size : int
-        Target triples sampled per batch.
     min_length : int
         Shortest rule body to mine.
     max_length : int
@@ -71,8 +58,6 @@ class AnytimeConfig:
     min_batches_per_length : int
         Batches to run at a length before saturation may end it, so one
         unlucky batch cannot cut a length short.
-    seed : int
-        Base seed; each batch derives its own from this.
 
     Raises
     ------
@@ -82,22 +67,16 @@ class AnytimeConfig:
     """
 
     total_seconds: float = DEFAULT_TOTAL_SECONDS
-    batch_size: int = DEFAULT_BATCH_SIZE
     min_length: int = DEFAULT_MIN_RULE_LENGTH
     max_length: int = DEFAULT_MAX_RULE_LENGTH
     saturation: float = DEFAULT_SATURATION
     min_batches_per_length: int = DEFAULT_MIN_BATCHES_PER_LENGTH
-    seed: int = DEFAULT_SEED
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if self.total_seconds <= 0.0:
             raise ConfigurationError(
                 f"total_seconds must be positive, got {self.total_seconds}"
-            )
-        if self.batch_size < 1:
-            raise ConfigurationError(
-                f"batch_size must be positive, got {self.batch_size}"
             )
         if self.min_length < 1:
             raise ConfigurationError(
@@ -220,9 +199,14 @@ class AnytimeLearner:
     def __init__(self, stages: MiningStages, config: AnytimeConfig) -> None:
         self._stages = stages
         self._config = config
-        self._seen: set[str] = set()
+        self._seen: dict[Rule, None] = {}
         self._batch_index = 0
         self._last_produced = 0
+
+    @property
+    def candidates(self) -> tuple[Rule, ...]:
+        """Return every distinct rule generalized so far, in first-seen order."""
+        return tuple(self._seen)
 
     def learn(self) -> tuple[list[tuple[Rule, RuleMetrics]], AnytimeReport]:
         """Run the mining loop within the configured budget.
@@ -341,9 +325,8 @@ class AnytimeLearner:
         fresh: list[Rule] = []
         for rule in candidates:
             self._last_produced += 1
-            key = str(rule)
-            if key not in self._seen:
-                self._seen.add(key)
+            if rule not in self._seen:
+                self._seen[rule] = None
                 fresh.append(rule)
         return fresh
 

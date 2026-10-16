@@ -1,24 +1,29 @@
 """Link prediction evaluation: MRR and Hits@K metrics."""
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, assert_never
+from typing import assert_never
 
 import torch
 
 from ._logging import get_logger
-from .graph import EdgeTypeTuple, HeteroGraph
-from .sampler import Triple
+from .core import EdgeTypeTuple, EntityScorer, QueryDirection, Triple
+from .exceptions import ConfigurationError
+from .graph import HeteroGraph
 
 logger = get_logger(__name__)
 
 DEFAULT_K_VALUES: tuple[int, ...] = (1, 3, 10)
 """Default Hits@K thresholds for link prediction evaluation."""
 
-FILTERED_SCORE: float = -1.0
-"""Score assigned to known triples during filtered evaluation."""
+FILTERED_SCORE: float = float("-inf")
+"""Score assigned to known triples during filtered evaluation.
+
+Negative infinity, so filtering works for scorers whose scores are unbounded,
+such as a learned aggregator.
+"""
 
 TIE_MIDPOINT_FRACTION: float = 0.5
 """Share of a tie group counted as ranking above the target under AVERAGE."""
@@ -83,21 +88,6 @@ def rank_with_ties(
             assert_never(unreachable)
 
 
-class QueryDirection(StrEnum):
-    """Which endpoint of a test triple a query ranks.
-
-    Attributes
-    ----------
-    TAIL : str
-        Rank candidate tails given the head.
-    HEAD : str
-        Rank candidate heads given the tail.
-    """
-
-    TAIL = "tail"
-    HEAD = "head"
-
-
 @dataclass(frozen=True, slots=True)
 class QueryRank:
     """The rank of one query's correct answer.
@@ -115,22 +105,6 @@ class QueryRank:
     direction: QueryDirection
     target_id: int
     rank: float
-
-
-class EntityScorer(Protocol):
-    """Scores candidate entities for a link prediction query.
-
-    Satisfied by :class:`~anyburl.prediction.RulePredictor` and by the
-    scorers in :mod:`anyburl.baselines`.
-    """
-
-    def score_tails(self, head_id: int) -> torch.Tensor:
-        """Return scores over all candidate tails for ``head_id``."""
-        ...
-
-    def score_heads(self, tail_id: int) -> torch.Tensor:
-        """Return scores over all candidate heads for ``tail_id``."""
-        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,14 +215,21 @@ class LinkPredictionEvaluator:
         -------
         tuple[QueryRank, ...]
             One rank per query, two per triple.
+
+        Raises
+        ------
+        ConfigurationError
+            If the triples span more than one edge type.
         """
         if not test_triples:
             return ()
 
-        first = test_triples[0]
-        head_to_tails, tail_to_heads = self._build_adjacency_index(
-            (first.head_type, first.relation, first.tail_type)
-        )
+        edge_types = {triple.edge_type for triple in test_triples}
+        if len(edge_types) > 1:
+            raise ConfigurationError(
+                f"test triples must share one edge type, got {sorted(edge_types)}"
+            )
+        head_to_tails, tail_to_heads = self._build_adjacency_index(edge_types.pop())
 
         query_ranks: list[QueryRank] = []
         for triple in test_triples:
@@ -303,6 +284,43 @@ class LinkPredictionEvaluator:
             head_to_tails[head].add(tail)
             tail_to_heads[tail].add(head)
         return dict(head_to_tails), dict(tail_to_heads)
+
+
+def rank_queries_by_edge_type(
+    scorer_for: Callable[[EdgeTypeTuple], EntityScorer],
+    known: HeteroGraph,
+    test_triples: Sequence[Triple],
+    config: EvaluationConfig,
+) -> tuple[QueryRank, ...]:
+    """Rank test triples of any number of relations, each with its own scorer.
+
+    Parameters
+    ----------
+    scorer_for : Callable[[EdgeTypeTuple], EntityScorer]
+        Returns the scorer for a relation.
+    known : HeteroGraph
+        The known triples filtered from each query's candidates.
+    test_triples : Sequence[Triple]
+        Test triples of one or more relations.
+    config : EvaluationConfig
+        Evaluation configuration.
+
+    Returns
+    -------
+    tuple[QueryRank, ...]
+        Two ranks per triple, grouped by relation in order of first
+        appearance and in input order within a relation.
+    """
+    by_edge_type: dict[EdgeTypeTuple, list[Triple]] = defaultdict(list)
+    for triple in test_triples:
+        by_edge_type[triple.edge_type].append(triple)
+    return tuple(
+        query
+        for edge_type, triples in by_edge_type.items()
+        for query in LinkPredictionEvaluator(
+            scorer_for(edge_type), known, config
+        ).rank_queries(triples)
+    )
 
 
 def summarize_ranks(
