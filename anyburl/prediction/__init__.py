@@ -3,6 +3,7 @@
 from .grounding import GroundingMode
 from .predictor import RulePredictor
 from .records import (
+    AcyclicEvidence,
     ChainEvidence,
     Prediction,
     PredictionConfig,
@@ -12,6 +13,7 @@ from .records import (
 from .scoring import ConfidenceAggregation, ScoringStrategy
 
 __all__ = [
+    "AcyclicEvidence",
     "ChainEvidence",
     "ConfidenceAggregation",
     "GroundingMode",

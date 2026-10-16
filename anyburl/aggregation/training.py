@@ -16,7 +16,7 @@ from torch import Tensor
 from ..evaluation import QueryDirection
 from ..exceptions import ConfigurationError
 from ..sampler import Triple
-from .features import CandidateFeature, CandidateFeaturizer, column_of
+from .features import QueryFeaturizer
 
 __all__ = [
     "CandidateSampling",
@@ -24,6 +24,7 @@ __all__ = [
     "RankingQuery",
     "TrainingSet",
     "build_training_set",
+    "concat_training_sets",
     "ranking_queries",
 ]
 
@@ -182,7 +183,7 @@ class TrainingSet:
 
 
 def build_training_set(
-    featurizer: CandidateFeaturizer,
+    featurizer: QueryFeaturizer,
     queries: Sequence[RankingQuery],
     known: KnownAnswers,
     sampling: CandidateSampling,
@@ -191,7 +192,7 @@ def build_training_set(
 
     Parameters
     ----------
-    featurizer : CandidateFeaturizer
+    featurizer : QueryFeaturizer
         Builds the full candidate feature matrix of a query.
     queries : Sequence[RankingQuery]
         The queries to learn from.
@@ -221,8 +222,39 @@ def build_training_set(
     return _pad(blocks)
 
 
+def concat_training_sets(training_sets: Sequence[TrainingSet]) -> TrainingSet:
+    """Stack training sets with the same features into one.
+
+    Parameters
+    ----------
+    training_sets : Sequence[TrainingSet]
+        Sets whose feature columns mean the same thing.
+
+    Returns
+    -------
+    TrainingSet
+        Every query of every set, padded to the widest.
+
+    Raises
+    ------
+    ConfigurationError
+        If ``training_sets`` is empty or their feature counts differ.
+    """
+    if not training_sets:
+        raise ConfigurationError("training_sets must not be empty")
+    if len({ts.features.size(2) for ts in training_sets}) > 1:
+        raise ConfigurationError("training sets have different feature counts")
+    return _pad(
+        [
+            ts.features[index, ts.mask[index]]
+            for ts in training_sets
+            for index in range(ts.features.size(0))
+        ]
+    )
+
+
 def _query_block(
-    featurizer: CandidateFeaturizer,
+    featurizer: QueryFeaturizer,
     query: RankingQuery,
     known: frozenset[int],
     sampling: CandidateSampling,
@@ -230,7 +262,7 @@ def _query_block(
 ) -> Tensor:
     """Return the features of one query's sampled candidates, target first."""
     features = featurizer.featurize(query.direction, query.query_id)
-    rule_scores = features[:, column_of(CandidateFeature.RULE_SCORE)]
+    rule_scores = features[:, featurizer.score_column]
     ids = _sample_candidate_ids(
         rule_scores, query.target_id, known, sampling, generator
     )

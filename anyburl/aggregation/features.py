@@ -8,7 +8,7 @@ and ``LOG_DEGREE`` alone can express the fixed popularity discount
 """
 
 from enum import StrEnum
-from typing import assert_never
+from typing import Protocol, assert_never
 
 import torch
 from torch import Tensor
@@ -20,6 +20,7 @@ from ..stratification import RelationDegrees
 __all__ = [
     "CandidateFeature",
     "CandidateFeaturizer",
+    "QueryFeaturizer",
     "build_features",
     "column_of",
 ]
@@ -111,6 +112,23 @@ def build_features(evidence: ChainEvidence, candidate_degrees: Tensor) -> Tensor
     return torch.cat([summary, contributions.T], dim=1)
 
 
+class QueryFeaturizer(Protocol):
+    """Builds a feature matrix over every candidate of a query."""
+
+    @property
+    def score_column(self) -> int:
+        """Column of the rule score candidates are sampled by."""
+        ...
+
+    def feature_names(self) -> tuple[str, ...]:
+        """Return the column names of :meth:`featurize`."""
+        ...
+
+    def featurize(self, direction: QueryDirection, query_id: int) -> Tensor:
+        """Return ``(num_candidates, num_features)`` features of one query."""
+        ...
+
+
 class CandidateFeaturizer:
     """Builds per-candidate features for queries against a fitted predictor.
 
@@ -125,6 +143,11 @@ class CandidateFeaturizer:
     def __init__(self, predictor: RulePredictor, degrees: RelationDegrees) -> None:
         self._predictor = predictor
         self._degrees = degrees
+
+    @property
+    def score_column(self) -> int:
+        """Column of the rule score candidates are sampled by."""
+        return column_of(CandidateFeature.RULE_SCORE)
 
     def feature_names(self) -> tuple[str, ...]:
         """Return the column names of :meth:`featurize`.

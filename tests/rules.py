@@ -65,3 +65,46 @@ def metrics_with(confidence: float) -> RuleMetrics:
     return RuleMetrics(
         support=1, confidence=confidence, head_coverage=0.25, num_predictions=4
     )
+
+
+def object_constant_rule(city_id: int, born_in_city: int | None) -> Rule:
+    """Return ``lives_in(X, city) :- born_in(X, d)``, or ``born_in(X, A)``."""
+    end = (
+        Term.variable("A", node_type="city")
+        if born_in_city is None
+        else Term.constant(born_in_city, node_type="city")
+    )
+    return Rule(
+        head=Atom(
+            relation="lives_in",
+            subject=Term.variable("X", node_type="person"),
+            object_=Term.constant(city_id, node_type="city"),
+        ),
+        body=(
+            Atom(
+                relation="born_in",
+                subject=Term.variable("X", node_type="person"),
+                object_=end,
+            ),
+        ),
+        rule_type=RuleType.ACYCLIC,
+    )
+
+
+def subject_constant_near_rule(person_id: int) -> Rule:
+    """Return ``lives_in(person, Y) :- near(Y, A)``."""
+    return Rule(
+        head=Atom(
+            relation="lives_in",
+            subject=Term.constant(person_id, node_type="person"),
+            object_=Term.variable("Y", node_type="city"),
+        ),
+        body=(
+            Atom(
+                relation="near",
+                subject=Term.variable("Y", node_type="city"),
+                object_=Term.variable("A", node_type="city"),
+            ),
+        ),
+        rule_type=RuleType.ACYCLIC,
+    )

@@ -4,7 +4,7 @@ from torch import Tensor
 
 from ..evaluation import QueryDirection
 from ..exceptions import ConfigurationError
-from .features import CandidateFeaturizer
+from .features import QueryFeaturizer
 from .model import LinearAggregator
 
 __all__ = ["AggregatedScorer"]
@@ -17,7 +17,7 @@ class AggregatedScorer:
 
     Parameters
     ----------
-    featurizer : CandidateFeaturizer
+    featurizer : QueryFeaturizer
         Featurizes queries; its rules must be the ones the model was fitted
         on, so the per-chain columns line up.
     aggregator : LinearAggregator
@@ -30,7 +30,7 @@ class AggregatedScorer:
     """
 
     def __init__(
-        self, featurizer: CandidateFeaturizer, aggregator: LinearAggregator
+        self, featurizer: QueryFeaturizer, aggregator: LinearAggregator
     ) -> None:
         num_features = len(featurizer.feature_names())
         if num_features != aggregator.weights.numel():

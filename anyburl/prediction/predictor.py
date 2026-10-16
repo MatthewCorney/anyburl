@@ -17,7 +17,13 @@ from ..metrics.acyclic import AcyclicIndex
 from ..rule import Rule, RuleType
 from .acyclic import AcyclicScorer, Firings
 from .grounding import BodyChainKey, build_groundings
-from .records import ChainEvidence, Prediction, PredictionConfig, RuleFiring
+from .records import (
+    AcyclicEvidence,
+    ChainEvidence,
+    Prediction,
+    PredictionConfig,
+    RuleFiring,
+)
 from .scoring import (
     TIE_BREAK_WEIGHT,
     ConfidenceAggregation,
@@ -200,6 +206,46 @@ class RulePredictor:
         return ChainEvidence(
             contributions=torch.stack([row[0] for row in rows]) if rows else empty,
             groundings=torch.stack([row[1] for row in rows]) if rows else empty,
+        )
+
+    def acyclic_evidence(
+        self, direction: QueryDirection, query_id: int
+    ) -> AcyclicEvidence:
+        """Summarise the acyclic rules firing for every candidate of a query.
+
+        Parameters
+        ----------
+        direction : QueryDirection
+            ``TAIL`` to score tails of head ``query_id``, ``HEAD`` to score
+            heads of tail ``query_id``.
+        query_id : int
+            The entity being queried.
+
+        Returns
+        -------
+        AcyclicEvidence
+            Strongest confidence, noisy-or and firing count per candidate.
+        """
+        match direction:
+            case QueryDirection.TAIL:
+                firings = self._acyclic.tail_firings(query_id)
+                num_candidates = self._num_tails
+            case QueryDirection.HEAD:
+                firings = self._acyclic.head_firings(query_id)
+                num_candidates = self._num_heads
+            case _ as unreachable:
+                assert_never(unreachable)
+        candidates, confidences = firings
+        max_confidence = torch.zeros(num_candidates)
+        max_confidence.scatter_reduce_(0, candidates, confidences, "amax")
+        log_complement = torch.zeros(num_candidates)
+        log_complement.index_add_(0, candidates, torch.log1p(-confidences))
+        counts = torch.zeros(num_candidates)
+        counts.index_add_(0, candidates, torch.ones_like(confidences))
+        return AcyclicEvidence(
+            max_confidence=max_confidence,
+            noisy_or=1.0 - torch.exp(log_complement),
+            firings=counts,
         )
 
     def explain(self, head_id: int, tail_id: int) -> tuple[RuleFiring, ...]:

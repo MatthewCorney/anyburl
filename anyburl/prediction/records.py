@@ -141,6 +141,25 @@ class Prediction:
 
 
 @dataclass(frozen=True, slots=True)
+class AcyclicEvidence:
+    """The acyclic rules firing for every candidate of a query.
+
+    Parameters
+    ----------
+    max_confidence : Tensor
+        ``(num_candidates,)`` confidence of the strongest firing rule.
+    noisy_or : Tensor
+        ``(num_candidates,)`` ``1 - prod(1 - confidence)`` over firing rules.
+    firings : Tensor
+        ``(num_candidates,)`` number of rules firing.
+    """
+
+    max_confidence: Tensor
+    noisy_or: Tensor
+    firings: Tensor
+
+
+@dataclass(frozen=True, slots=True)
 class ChainEvidence:
     """Each body chain's separate contribution to every candidate of a query.
 

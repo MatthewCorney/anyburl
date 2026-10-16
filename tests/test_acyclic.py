@@ -11,7 +11,6 @@ from anyburl.pipeline import AnyBURL, AnyBURLConfig
 from anyburl.prediction import RulePredictor
 from anyburl.rule import (
     AcyclicStep,
-    Atom,
     Rule,
     RuleConfig,
     RuleType,
@@ -21,53 +20,11 @@ from anyburl.rule import (
 )
 from anyburl.sampler import Triple
 from anyburl.walk import AcyclicStepSampler
+from tests.rules import object_constant_rule, subject_constant_near_rule
 
 LIVES_IN = ("person", "lives_in", "city")
 BORN_IN = ("person", "born_in", "city")
 NEAR = ("city", "near", "city")
-
-
-def object_constant_rule(city_id: int, born_in_city: int | None) -> Rule:
-    """Return ``lives_in(X, city) :- born_in(X, d)``, or ``born_in(X, A)``."""
-    end = (
-        Term.variable("A", node_type="city")
-        if born_in_city is None
-        else Term.constant(born_in_city, node_type="city")
-    )
-    return Rule(
-        head=Atom(
-            relation="lives_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.constant(city_id, node_type="city"),
-        ),
-        body=(
-            Atom(
-                relation="born_in",
-                subject=Term.variable("X", node_type="person"),
-                object_=end,
-            ),
-        ),
-        rule_type=RuleType.ACYCLIC,
-    )
-
-
-def subject_constant_near_rule(person_id: int) -> Rule:
-    """Return ``lives_in(person, Y) :- near(Y, A)``."""
-    return Rule(
-        head=Atom(
-            relation="lives_in",
-            subject=Term.constant(person_id, node_type="person"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-        body=(
-            Atom(
-                relation="near",
-                subject=Term.variable("Y", node_type="city"),
-                object_=Term.variable("A", node_type="city"),
-            ),
-        ),
-        rule_type=RuleType.ACYCLIC,
-    )
 
 
 class TestGeneralizeAcyclic:
