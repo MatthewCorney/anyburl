@@ -9,6 +9,7 @@ from anyburl.aggregation import (
     CandidateFeature,
     CandidateFeaturizer,
     CandidateSampling,
+    CandidateScope,
     KnownAnswers,
     LinearAggregator,
     RankingQuery,
@@ -30,6 +31,9 @@ NUM_QUERIES = 40
 NUM_CANDIDATES = 6
 SIGNAL_COLUMN = 0
 NOISE_COLUMN = 1
+REACHED_SAMPLING = CandidateSampling(
+    max_rule_candidates=5, num_random_candidates=5, scope=CandidateScope.REACHED
+)
 
 
 @pytest.fixture
@@ -141,6 +145,49 @@ class TestBuildTrainingSet:
                 featurizer, [], KnownAnswers.from_pairs([]), CandidateSampling()
             )
 
+    def test_reached_scope_drops_queries_the_rules_miss(
+        self, featurizer: CandidateFeaturizer
+    ) -> None:
+        """Person 0's rules reach city 1 only."""
+        queries = [
+            RankingQuery(QueryDirection.TAIL, 0, 2),
+            RankingQuery(QueryDirection.TAIL, 0, 1),
+        ]
+
+        training_set = build_training_set(
+            featurizer, queries, KnownAnswers.from_pairs([]), REACHED_SAMPLING
+        )
+
+        full = featurizer.featurize(QueryDirection.TAIL, 0)
+        assert training_set.features.size(0) == 1
+        assert torch.equal(training_set.features[0, 0], full[1])
+
+    def test_reached_scope_samples_only_reached_negatives(
+        self, featurizer: CandidateFeaturizer
+    ) -> None:
+        """City 1's rules reach persons 0 and 2."""
+        query = RankingQuery(QueryDirection.HEAD, 1, 0)
+
+        training_set = build_training_set(
+            featurizer, [query], KnownAnswers.from_pairs([]), REACHED_SAMPLING
+        )
+
+        scores = training_set.features[0, :, column_of(CandidateFeature.RULE_SCORE)]
+        assert training_set.mask.sum().item() == 2
+        assert bool((scores > 0).all())
+
+    def test_reached_scope_may_keep_no_query(
+        self, featurizer: CandidateFeaturizer
+    ) -> None:
+        query = RankingQuery(QueryDirection.TAIL, 0, 2)
+
+        training_set = build_training_set(
+            featurizer, [query], KnownAnswers.from_pairs([]), REACHED_SAMPLING
+        )
+
+        assert training_set.features.size(0) == 0
+        assert training_set.features.size(2) == len(featurizer.feature_names())
+
     @pytest.mark.parametrize(("rule", "random"), [(0, 0), (-1, 5), (5, -1)])
     def test_invalid_sampling_raises(self, rule: int, random: int) -> None:
         with pytest.raises(ConfigurationError):
@@ -221,3 +268,26 @@ class TestAggregatedScorer:
 
         with pytest.raises(ConfigurationError, match="fitted on 2"):
             AggregatedScorer(featurizer, model)
+
+    def test_reached_scope_ranks_unreached_candidates_last(
+        self, featurizer: CandidateFeaturizer
+    ) -> None:
+        """The model prefers low rule scores, but only persons 0, 2 are reached."""
+        num_features = len(featurizer.feature_names())
+        weights = torch.zeros(num_features)
+        weights[column_of(CandidateFeature.RULE_SCORE)] = -1.0
+        model = LinearAggregator(
+            weights=weights,
+            mean=torch.zeros(num_features),
+            scale=torch.ones(num_features),
+        )
+
+        everywhere = AggregatedScorer(featurizer, model).score_heads(1)
+        reached = AggregatedScorer(
+            featurizer, model, scope=CandidateScope.REACHED
+        ).score_heads(1)
+
+        assert everywhere[1] > everywhere[0]
+        assert reached[1] == reached[3]
+        assert reached[1] < min(reached[0], reached[2])
+        assert torch.equal(reached[[0, 2]], everywhere[[0, 2]])

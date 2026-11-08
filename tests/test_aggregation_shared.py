@@ -135,3 +135,48 @@ class TestConcatTrainingSets:
 
         with pytest.raises(ConfigurationError, match="feature counts"):
             concat_training_sets([first, second])
+
+    def test_skips_sets_without_queries(self) -> None:
+        empty = TrainingSet(torch.zeros(0, 0, 3), torch.zeros(0, 0, dtype=torch.bool))
+        full = TrainingSet(torch.ones(1, 2, 3), torch.ones(1, 2, dtype=torch.bool))
+
+        combined = concat_training_sets([empty, full])
+
+        assert combined.features.shape == (1, 2, 3)
+
+    def test_sets_without_any_query_raise(self) -> None:
+        empty = TrainingSet(torch.zeros(0, 0, 3), torch.zeros(0, 0, dtype=torch.bool))
+
+        with pytest.raises(ConfigurationError, match="no queries"):
+            concat_training_sets([empty])
+
+
+class TestRestrictedSharedFeatures:
+    @pytest.fixture
+    def featurizer(
+        self, evaluator_graph: HeteroGraph, cyclic_rule: Rule
+    ) -> SharedFeaturizer:
+        results = [
+            (cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4)),
+            (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
+        ]
+        predictor = RulePredictor(evaluator_graph, results, config=PLAIN)
+        return SharedFeaturizer(
+            predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
+        )
+
+    def test_reached_spans_chains_and_acyclic_rules(
+        self, featurizer: SharedFeaturizer
+    ) -> None:
+        assert featurizer.reached(QueryDirection.TAIL, 2).tolist() == [0, 1]
+        assert featurizer.reached(QueryDirection.TAIL, 1).tolist() == [2]
+
+    def test_restricted_features_match_full_rows(
+        self, featurizer: SharedFeaturizer
+    ) -> None:
+        candidates = torch.tensor([1, 0])
+
+        restricted = featurizer.featurize(QueryDirection.TAIL, 2, candidates=candidates)
+
+        full = featurizer.featurize(QueryDirection.TAIL, 2)
+        assert torch.equal(restricted, full[candidates])

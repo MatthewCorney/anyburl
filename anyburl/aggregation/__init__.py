@@ -12,6 +12,7 @@ from .scorer import AggregatedScorer
 from .shared import SharedFeature, SharedFeaturizer, build_shared_features
 from .training import (
     CandidateSampling,
+    CandidateScope,
     KnownAnswers,
     RankingQuery,
     TrainingSet,
@@ -26,6 +27,7 @@ __all__ = [
     "CandidateFeature",
     "CandidateFeaturizer",
     "CandidateSampling",
+    "CandidateScope",
     "KnownAnswers",
     "LinearAggregator",
     "QueryFeaturizer",

@@ -1,9 +1,11 @@
 """Ground learned rules and report their evidence for every candidate of a query."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import assert_never
 
 import torch
+from torch import Tensor
 
 from ..acyclic.evaluation import AcyclicIndex
 from ..acyclic.scoring import AcyclicScorer, Firings
@@ -15,9 +17,48 @@ from ..rule import Rule, RuleType
 from .grounding import build_groundings
 from .records import AcyclicEvidence, ChainEvidence, PredictionConfig
 from .scoring import GroundingWeighting
-from .sides import ChainSide, build_chain_sides, side_evidence
+from .sides import ChainSide, SideEvidence, build_chain_sides, side_evidence
 
 __all__ = ["RuleEvidence"]
+
+UNSELECTED_SLOT: int = -1
+"""Slot of a candidate left out of a restricted evidence query."""
+
+
+@dataclass(frozen=True, slots=True)
+class _QueryChainEvidence:
+    """Every body chain's evidence for one query, flattened across chains.
+
+    Parameters
+    ----------
+    rows : Tensor
+        Chain row of each entry.
+    side : SideEvidence
+        Candidate, contribution and grounding count of each entry.
+    """
+
+    rows: Tensor
+    side: SideEvidence
+
+    @classmethod
+    def concat(cls, found: Sequence[SideEvidence]) -> "_QueryChainEvidence":
+        """Flatten per-chain evidence, keeping each entry's chain row."""
+        sizes = torch.tensor(
+            [side.candidates.numel() for side in found], dtype=torch.long
+        )
+        empty = torch.zeros(0)
+        return cls(
+            rows=torch.repeat_interleave(torch.arange(len(found)), sizes),
+            side=SideEvidence(
+                candidates=torch.cat(
+                    [empty.long(), *(side.candidates for side in found)]
+                ),
+                contributions=torch.cat(
+                    [empty, *(side.contributions for side in found)]
+                ),
+                groundings=torch.cat([empty, *(side.groundings for side in found)]),
+            ),
+        )
 
 
 class RuleEvidence:
@@ -77,6 +118,9 @@ class RuleEvidence:
         self._acyclic = AcyclicScorer(
             graph.cached(AcyclicIndex), results, config.unseen_negatives
         )
+        self._latest: tuple[tuple[QueryDirection, int], _QueryChainEvidence] | None = (
+            None
+        )
 
     @property
     def head_edge_type(self) -> EdgeTypeTuple:
@@ -123,8 +167,28 @@ class RuleEvidence:
             case _ as unreachable:
                 assert_never(unreachable)
 
-    def chain_evidence(self, direction: QueryDirection, query_id: int) -> ChainEvidence:
-        """Break a query's chain evidence down by body chain.
+    def _query_chain_evidence(
+        self, direction: QueryDirection, query_id: int
+    ) -> _QueryChainEvidence:
+        """Return every chain's evidence for one query.
+
+        The latest query's evidence is kept, so asking for a query's
+        :meth:`reached_candidates` and then its evidence grounds it once.
+        """
+        key = (direction, query_id)
+        if self._latest is not None and self._latest[0] == key:
+            return self._latest[1]
+        found = _QueryChainEvidence.concat(
+            [
+                side_evidence(side, query_id, self._weighting)
+                for side in self.sides(direction)
+            ]
+        )
+        self._latest = (key, found)
+        return found
+
+    def reached_candidates(self, direction: QueryDirection, query_id: int) -> Tensor:
+        """Return the sorted ids of candidates some rule gives a positive score.
 
         Parameters
         ----------
@@ -136,23 +200,59 @@ class RuleEvidence:
 
         Returns
         -------
-        ChainEvidence
-            One row per body chain over every candidate, in the order of
-            :attr:`chains`. Tail and head sides share that order.
+        Tensor
+            Unique candidate ids, ascending.
         """
-        num_candidates = self.num_candidates(direction)
-        rows = [
-            side_evidence(side, query_id, num_candidates, self._weighting)
-            for side in self.sides(direction)
-        ]
-        empty = torch.zeros(0, num_candidates)
-        return ChainEvidence(
-            contributions=torch.stack([row[0] for row in rows]) if rows else empty,
-            groundings=torch.stack([row[1] for row in rows]) if rows else empty,
-        )
+        acyclic_ids, _ = self.acyclic_firings(direction, query_id)
+        found = self._query_chain_evidence(direction, query_id).side
+        chain_ids = found.candidates[found.contributions > 0]
+        reached: Tensor = torch.unique(torch.cat([chain_ids, acyclic_ids]))
+        return reached
+
+    def chain_evidence(
+        self,
+        direction: QueryDirection,
+        query_id: int,
+        *,
+        candidates: Tensor | None = None,
+    ) -> ChainEvidence:
+        """Break a query's chain evidence down by body chain.
+
+        Parameters
+        ----------
+        direction : QueryDirection
+            ``TAIL`` to score tails of head ``query_id``, ``HEAD`` to score
+            heads of tail ``query_id``.
+        query_id : int
+            The entity being queried.
+        candidates : Tensor | None
+            Unique ids of the candidates to report, in column order.
+            ``None`` reports every candidate.
+
+        Returns
+        -------
+        ChainEvidence
+            One row per body chain, in the order of :attr:`chains`. Tail and
+            head sides share that order.
+        """
+        slots = self._candidate_slots(direction, candidates)
+        num_columns = int((slots != UNSELECTED_SLOT).sum().item())
+        found = self._query_chain_evidence(direction, query_id)
+        columns = slots[found.side.candidates]
+        is_selected = columns != UNSELECTED_SLOT
+        rows, columns = found.rows[is_selected], columns[is_selected]
+        contributions = torch.zeros(len(self.sides(direction)), num_columns)
+        groundings = torch.zeros_like(contributions)
+        contributions[rows, columns] = found.side.contributions[is_selected]
+        groundings[rows, columns] = found.side.groundings[is_selected]
+        return ChainEvidence(contributions=contributions, groundings=groundings)
 
     def acyclic_evidence(
-        self, direction: QueryDirection, query_id: int
+        self,
+        direction: QueryDirection,
+        query_id: int,
+        *,
+        candidates: Tensor | None = None,
     ) -> AcyclicEvidence:
         """Summarise the acyclic rules firing for every candidate of a query.
 
@@ -163,22 +263,40 @@ class RuleEvidence:
             heads of tail ``query_id``.
         query_id : int
             The entity being queried.
+        candidates : Tensor | None
+            Unique ids of the candidates to report, in order. ``None``
+            reports every candidate.
 
         Returns
         -------
         AcyclicEvidence
             Strongest confidence, noisy-or and firing count per candidate.
         """
-        candidates, confidences = self.acyclic_firings(direction, query_id)
-        num_candidates = self.num_candidates(direction)
-        max_confidence = torch.zeros(num_candidates)
-        max_confidence.scatter_reduce_(0, candidates, confidences, "amax")
-        log_complement = torch.zeros(num_candidates)
-        log_complement.index_add_(0, candidates, torch.log1p(-confidences))
-        counts = torch.zeros(num_candidates)
-        counts.index_add_(0, candidates, torch.ones_like(confidences))
+        slots = self._candidate_slots(direction, candidates)
+        num_columns = int((slots != UNSELECTED_SLOT).sum().item())
+        fired, confidences = self.acyclic_firings(direction, query_id)
+        columns = slots[fired]
+        is_selected = columns != UNSELECTED_SLOT
+        columns, confidences = columns[is_selected], confidences[is_selected]
+        max_confidence = torch.zeros(num_columns)
+        max_confidence.scatter_reduce_(0, columns, confidences, "amax")
+        log_complement = torch.zeros(num_columns)
+        log_complement.index_add_(0, columns, torch.log1p(-confidences))
+        counts = torch.zeros(num_columns)
+        counts.index_add_(0, columns, torch.ones_like(confidences))
         return AcyclicEvidence(
             max_confidence=max_confidence,
             noisy_or=1.0 - torch.exp(log_complement),
             firings=counts,
         )
+
+    def _candidate_slots(
+        self, direction: QueryDirection, candidates: Tensor | None
+    ) -> Tensor:
+        """Map each candidate id to its column, or :data:`UNSELECTED_SLOT`."""
+        num_candidates = self.num_candidates(direction)
+        if candidates is None:
+            return torch.arange(num_candidates)
+        slots = torch.full((num_candidates,), UNSELECTED_SLOT, dtype=torch.long)
+        slots[candidates] = torch.arange(candidates.numel())
+        return slots

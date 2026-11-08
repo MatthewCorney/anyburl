@@ -113,7 +113,7 @@ def build_features(evidence: ChainEvidence, candidate_degrees: Tensor) -> Tensor
 
 
 class QueryFeaturizer(Protocol):
-    """Builds a feature matrix over every candidate of a query."""
+    """Builds a feature matrix over the candidates of a query."""
 
     @property
     def score_column(self) -> int:
@@ -124,8 +124,22 @@ class QueryFeaturizer(Protocol):
         """Return the column names of :meth:`featurize`."""
         ...
 
-    def featurize(self, direction: QueryDirection, query_id: int) -> Tensor:
-        """Return ``(num_candidates, num_features)`` features of one query."""
+    def num_candidates(self, direction: QueryDirection) -> int:
+        """Return how many entities a query in ``direction`` ranks."""
+        ...
+
+    def reached(self, direction: QueryDirection, query_id: int) -> Tensor:
+        """Return the sorted ids of candidates some rule scores positively."""
+        ...
+
+    def featurize(
+        self,
+        direction: QueryDirection,
+        query_id: int,
+        *,
+        candidates: Tensor | None = None,
+    ) -> Tensor:
+        """Return ``(len(candidates), num_features)`` features of one query."""
         ...
 
 
@@ -163,8 +177,22 @@ class CandidateFeaturizer:
         )
         return (*(feature.value for feature in CandidateFeature), *chain_names)
 
-    def featurize(self, direction: QueryDirection, query_id: int) -> Tensor:
-        """Return the feature matrix over every candidate of one query.
+    def num_candidates(self, direction: QueryDirection) -> int:
+        """Return how many entities a query in ``direction`` ranks."""
+        return self._evidence.num_candidates(direction)
+
+    def reached(self, direction: QueryDirection, query_id: int) -> Tensor:
+        """Return the sorted ids of candidates some rule scores positively."""
+        return self._evidence.reached_candidates(direction, query_id)
+
+    def featurize(
+        self,
+        direction: QueryDirection,
+        query_id: int,
+        *,
+        candidates: Tensor | None = None,
+    ) -> Tensor:
+        """Return the feature matrix over the candidates of one query.
 
         Parameters
         ----------
@@ -173,11 +201,41 @@ class CandidateFeaturizer:
             of tail ``query_id``.
         query_id : int
             The entity being queried.
+        candidates : Tensor | None
+            Unique ids of the candidates to featurize, in row order.
+            ``None`` featurizes every candidate.
 
         Returns
         -------
         Tensor
             ``(num_candidates, num_features)`` features.
         """
-        evidence = self._evidence.chain_evidence(direction, query_id)
-        return build_features(evidence, self._degrees.of_candidates(direction))
+        evidence = self._evidence.chain_evidence(
+            direction, query_id, candidates=candidates
+        )
+        return build_features(
+            evidence, select_degrees(self._degrees, direction, candidates)
+        )
+
+
+def select_degrees(
+    degrees: RelationDegrees, direction: QueryDirection, candidates: Tensor | None
+) -> Tensor:
+    """Return the training degrees of ``candidates``, or of every candidate.
+
+    Parameters
+    ----------
+    degrees : RelationDegrees
+        Training degrees of the target relation.
+    direction : QueryDirection
+        The query direction, which picks head or tail degrees.
+    candidates : Tensor | None
+        Candidate ids; ``None`` selects all.
+
+    Returns
+    -------
+    Tensor
+        One degree per selected candidate.
+    """
+    all_degrees = degrees.of_candidates(direction)
+    return all_degrees if candidates is None else all_degrees[candidates]

@@ -14,7 +14,7 @@ from ..core import QueryDirection
 from ..prediction import AcyclicEvidence, ChainEvidence, RuleEvidence
 from ..rule import RuleType
 from ..stratification import RelationDegrees
-from .features import LOG_SCORE_FLOOR
+from .features import LOG_SCORE_FLOOR, select_degrees
 
 __all__ = ["SharedFeature", "SharedFeaturizer", "build_shared_features"]
 
@@ -149,8 +149,22 @@ class SharedFeaturizer:
         """Return the column names of :meth:`featurize`."""
         return tuple(feature.value for feature in SharedFeature)
 
-    def featurize(self, direction: QueryDirection, query_id: int) -> Tensor:
-        """Return the feature matrix over every candidate of one query.
+    def num_candidates(self, direction: QueryDirection) -> int:
+        """Return how many entities a query in ``direction`` ranks."""
+        return self._evidence.num_candidates(direction)
+
+    def reached(self, direction: QueryDirection, query_id: int) -> Tensor:
+        """Return the sorted ids of candidates some rule scores positively."""
+        return self._evidence.reached_candidates(direction, query_id)
+
+    def featurize(
+        self,
+        direction: QueryDirection,
+        query_id: int,
+        *,
+        candidates: Tensor | None = None,
+    ) -> Tensor:
+        """Return the feature matrix over the candidates of one query.
 
         Parameters
         ----------
@@ -159,6 +173,9 @@ class SharedFeaturizer:
             of tail ``query_id``.
         query_id : int
             The entity being queried.
+        candidates : Tensor | None
+            Unique ids of the candidates to featurize, in row order.
+            ``None`` featurizes every candidate.
 
         Returns
         -------
@@ -166,8 +183,8 @@ class SharedFeaturizer:
             ``(num_candidates, len(SharedFeature))`` features.
         """
         return build_shared_features(
-            self._evidence.chain_evidence(direction, query_id),
+            self._evidence.chain_evidence(direction, query_id, candidates=candidates),
             self._chain_types,
-            self._evidence.acyclic_evidence(direction, query_id),
-            self._degrees.of_candidates(direction),
+            self._evidence.acyclic_evidence(direction, query_id, candidates=candidates),
+            select_degrees(self._degrees, direction, candidates),
         )

@@ -8,6 +8,7 @@ are dropped, as in the filtered evaluation setting.
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum, auto
 from typing import assert_never
 
 import torch
@@ -19,6 +20,7 @@ from .features import QueryFeaturizer
 
 __all__ = [
     "CandidateSampling",
+    "CandidateScope",
     "KnownAnswers",
     "RankingQuery",
     "TrainingSet",
@@ -38,6 +40,23 @@ DEFAULT_SAMPLING_SEED: int = 0
 
 TARGET_POSITION: int = 0
 """Row of each query's correct answer in :attr:`TrainingSet.features`."""
+
+
+class CandidateScope(StrEnum):
+    """Which candidates a learned aggregator ranks.
+
+    Attributes
+    ----------
+    ALL : str
+        Every entity of the candidate type.
+    REACHED : str
+        Only candidates some rule scores positively; the rest rank below
+        them, tied. Queries whose answer no rule reaches teach nothing and
+        are left out of training.
+    """
+
+    ALL = auto()
+    REACHED = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +164,9 @@ class CandidateSampling:
         Further negatives drawn uniformly from the remaining candidates.
     seed : int
         Seed for the uniform draw.
+    scope : CandidateScope
+        Which candidates negatives come from. Match the scope the fitted
+        model will rank with.
 
     Raises
     ------
@@ -155,6 +177,7 @@ class CandidateSampling:
     max_rule_candidates: int = DEFAULT_MAX_RULE_CANDIDATES
     num_random_candidates: int = DEFAULT_NUM_RANDOM_CANDIDATES
     seed: int = DEFAULT_SAMPLING_SEED
+    scope: CandidateScope = CandidateScope.ALL
 
     def __post_init__(self) -> None:
         """Reject counts that leave a query without negatives."""
@@ -203,7 +226,7 @@ def build_training_set(
     Returns
     -------
     TrainingSet
-        One padded block per query.
+        One padded block per kept query; empty when the scope keeps none.
 
     Raises
     ------
@@ -215,9 +238,17 @@ def build_training_set(
 
     generator = torch.Generator().manual_seed(sampling.seed)
     blocks = [
-        _query_block(featurizer, query, known.of(query), sampling, generator)
+        block
         for query in queries
+        if (block := _query_block(featurizer, query, known, sampling, generator))
+        is not None
     ]
+    if not blocks:
+        num_features = len(featurizer.feature_names())
+        return TrainingSet(
+            features=torch.zeros(0, 0, num_features),
+            mask=torch.zeros(0, 0, dtype=torch.bool),
+        )
     return _pad(blocks)
 
 
@@ -237,47 +268,75 @@ def concat_training_sets(training_sets: Sequence[TrainingSet]) -> TrainingSet:
     Raises
     ------
     ConfigurationError
-        If ``training_sets`` is empty or their feature counts differ.
+        If ``training_sets`` hold no query or their feature counts differ.
     """
-    if not training_sets:
-        raise ConfigurationError("training_sets must not be empty")
     if len({ts.features.size(2) for ts in training_sets}) > 1:
         raise ConfigurationError("training sets have different feature counts")
-    return _pad(
-        [
-            ts.features[index, ts.mask[index]]
-            for ts in training_sets
-            for index in range(ts.features.size(0))
-        ]
-    )
+    blocks = [
+        ts.features[index, ts.mask[index]]
+        for ts in training_sets
+        for index in range(ts.features.size(0))
+    ]
+    if not blocks:
+        raise ConfigurationError("training_sets hold no queries")
+    return _pad(blocks)
 
 
 def _query_block(
     featurizer: QueryFeaturizer,
     query: RankingQuery,
-    known: frozenset[int],
+    known: KnownAnswers,
     sampling: CandidateSampling,
     generator: torch.Generator,
-) -> Tensor:
-    """Return the features of one query's sampled candidates, target first."""
-    features = featurizer.featurize(query.direction, query.query_id)
-    rule_scores = features[:, featurizer.score_column]
-    ids = _sample_candidate_ids(
-        rule_scores, query.target_id, known, sampling, generator
+) -> Tensor | None:
+    """Return one query's sampled candidate features, target first.
+
+    ``None`` when the scope leaves the query's answer out.
+    """
+    match sampling.scope:
+        case CandidateScope.ALL:
+            candidates = None
+            target_row = query.target_id
+        case CandidateScope.REACHED:
+            candidates = featurizer.reached(query.direction, query.query_id)
+            matches = torch.nonzero(candidates == query.target_id)
+            if matches.numel() == 0:
+                return None
+            target_row = int(matches[0, 0].item())
+        case _ as unreachable:
+            assert_never(unreachable)
+    features = featurizer.featurize(
+        query.direction, query.query_id, candidates=candidates
     )
-    return features[ids]
+    excluded = _known_rows(known.of(query), features.size(0), candidates)
+    rows = _sample_rows(
+        features[:, featurizer.score_column], target_row, excluded, sampling, generator
+    )
+    return features[rows]
 
 
-def _sample_candidate_ids(
+def _known_rows(
+    known: frozenset[int], num_rows: int, candidates: Tensor | None
+) -> Tensor:
+    """Return a mask of the feature rows holding a known answer."""
+    known_ids = torch.tensor(sorted(known), dtype=torch.long)
+    if candidates is not None:
+        return torch.isin(candidates, known_ids)
+    excluded = torch.zeros(num_rows, dtype=torch.bool)
+    excluded[known_ids] = True
+    return excluded
+
+
+def _sample_rows(
     rule_scores: Tensor,
-    target_id: int,
-    known: frozenset[int],
+    target_row: int,
+    excluded: Tensor,
     sampling: CandidateSampling,
     generator: torch.Generator,
 ) -> Tensor:
-    """Return the target, then top rule-scored, then random negative ids."""
-    available = torch.ones(rule_scores.numel(), dtype=torch.bool)
-    available[list(known | {target_id})] = False
+    """Return the target, then top rule-scored, then random negative rows."""
+    available = ~excluded
+    available[target_row] = False
 
     reached = torch.nonzero(available & (rule_scores > 0), as_tuple=True)[0]
     order = torch.argsort(rule_scores[reached], descending=True, stable=True)
@@ -286,8 +345,8 @@ def _sample_candidate_ids(
 
     pool = torch.nonzero(available, as_tuple=True)[0]
     draw = torch.randperm(pool.numel(), generator=generator)
-    random_ids = pool[draw[: sampling.num_random_candidates]]
-    return torch.cat([torch.tensor([target_id]), top, random_ids])
+    random_rows = pool[draw[: sampling.num_random_candidates]]
+    return torch.cat([torch.tensor([target_row]), top, random_rows])
 
 
 def _pad(blocks: Sequence[Tensor]) -> TrainingSet:

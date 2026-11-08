@@ -136,3 +136,21 @@ class TestCandidateFeaturizer:
         assert names[NUM_SUMMARY] == (
             "chain[cyclic]: person_born_in_city -> city_near_city"
         )
+
+    def test_restricted_features_match_full_rows(
+        self, featurizer: CandidateFeaturizer
+    ) -> None:
+        candidates = torch.tensor([2, 0])
+
+        restricted = featurizer.featurize(QueryDirection.HEAD, 1, candidates=candidates)
+
+        full = featurizer.featurize(QueryDirection.HEAD, 1)
+        assert torch.equal(restricted, full[candidates])
+
+    def test_reached_are_the_positively_scored_candidates(
+        self, predictor: RulePredictor, featurizer: CandidateFeaturizer
+    ) -> None:
+        for city_id in range(3):
+            expected = torch.nonzero(predictor.score_heads(city_id) > 0).flatten()
+            reached = featurizer.reached(QueryDirection.HEAD, city_id)
+            assert reached.tolist() == expected.tolist()
