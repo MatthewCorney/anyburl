@@ -7,6 +7,7 @@ the fitted weights are comparable across features.
 """
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 from torch import Tensor
@@ -14,7 +15,7 @@ from torch import Tensor
 from ..exceptions import ConfigurationError
 from .training import TARGET_POSITION, TrainingSet
 
-__all__ = ["AggregatorConfig", "LinearAggregator"]
+__all__ = ["Aggregator", "AggregatorConfig", "LinearAggregator", "listwise_loss"]
 
 DEFAULT_L2_PENALTY: float = 1e-3
 """Weight on the squared norm of the standardised weights by default."""
@@ -27,6 +28,19 @@ MIN_FEATURE_SCALE: float = 1e-8
 
 LINE_SEARCH: str = "strong_wolfe"
 """L-BFGS line search; without one the step size can diverge."""
+
+
+class Aggregator(Protocol):
+    """Scores candidates from their feature rows."""
+
+    @property
+    def num_features(self) -> int:
+        """Number of feature columns the model reads."""
+        ...
+
+    def score(self, features: Tensor) -> Tensor:
+        """Return one score per candidate row; higher ranks first."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +93,18 @@ class LinearAggregator:
     mean: Tensor
     scale: Tensor
 
+    @property
+    def num_features(self) -> int:
+        """Number of feature columns the model reads."""
+        return self.weights.numel()
+
     @classmethod
     def fit(
-        cls, training_set: TrainingSet, config: AggregatorConfig
+        cls,
+        training_set: TrainingSet,
+        config: AggregatorConfig,
+        *,
+        offsets: Tensor | None = None,
     ) -> "LinearAggregator":
         """Fit weights that rank each query's correct answer first.
 
@@ -91,6 +114,9 @@ class LinearAggregator:
             Padded candidate features, correct answer first in each query.
         config : AggregatorConfig
             Regularisation and iteration budget.
+        offsets : Tensor | None
+            ``(num_queries, max_candidates)`` fixed scores the fitted ones
+            are added to, such as another model's; ``None`` adds nothing.
 
         Returns
         -------
@@ -99,9 +125,10 @@ class LinearAggregator:
         """
         rows = training_set.features[training_set.mask]
         mean = rows.mean(dim=0)
-        std = rows.std(dim=0)
+        std = rows.std(dim=0) if rows.size(0) > 1 else torch.zeros_like(mean)
         scale = torch.where(std > MIN_FEATURE_SCALE, std, torch.ones_like(std))
         standardised = (training_set.features - mean) / scale
+        base = offsets if offsets is not None else torch.zeros(training_set.mask.shape)
 
         weights = torch.zeros(rows.size(1), requires_grad=True)
         optimiser = torch.optim.LBFGS(
@@ -110,7 +137,7 @@ class LinearAggregator:
 
         def closure() -> Tensor:
             optimiser.zero_grad()
-            loss = listwise_loss(standardised, training_set.mask, weights)
+            loss = listwise_loss(standardised, training_set.mask, weights, offsets=base)
             loss = loss + config.l2_penalty * weights.square().sum()
             loss.backward()  # type: ignore[no-untyped-call]
             return loss
@@ -143,7 +170,13 @@ class LinearAggregator:
         return ((features - self.mean) / self.scale) @ self.weights
 
 
-def listwise_loss(features: Tensor, mask: Tensor, weights: Tensor) -> Tensor:
+def listwise_loss(
+    features: Tensor,
+    mask: Tensor,
+    weights: Tensor,
+    *,
+    offsets: Tensor | None = None,
+) -> Tensor:
     """Return the mean negative log-probability of each query's answer.
 
     Parameters
@@ -154,12 +187,17 @@ def listwise_loss(features: Tensor, mask: Tensor, weights: Tensor) -> Tensor:
         ``(num_queries, max_candidates)`` bool, ``False`` on padding.
     weights : Tensor
         ``(num_features,)`` model weights.
+    offsets : Tensor | None
+        ``(num_queries, max_candidates)`` scores added to the logits.
 
     Returns
     -------
     Tensor
         Scalar loss.
     """
-    logits = (features @ weights).masked_fill(~mask, float("-inf"))
+    logits = features @ weights
+    if offsets is not None:
+        logits = logits + offsets
+    logits = logits.masked_fill(~mask, float("-inf"))
     log_probabilities = logits[:, TARGET_POSITION] - torch.logsumexp(logits, dim=1)
     return -log_probabilities.mean()

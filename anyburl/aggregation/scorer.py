@@ -8,7 +8,7 @@ from torch import Tensor
 from ..core import QueryDirection
 from ..exceptions import ConfigurationError
 from .features import QueryFeaturizer
-from .model import LinearAggregator
+from .model import Aggregator
 from .training import CandidateScope
 
 __all__ = ["UNREACHED_MARGIN", "AggregatedScorer"]
@@ -27,7 +27,7 @@ class AggregatedScorer:
     featurizer : QueryFeaturizer
         Featurizes queries; its rules must be the ones the model was fitted
         on, so the per-chain columns line up.
-    aggregator : LinearAggregator
+    aggregator : Aggregator
         The fitted model.
     scope : CandidateScope
         Which candidates the model ranks. With ``REACHED`` the rest tie
@@ -42,15 +42,15 @@ class AggregatedScorer:
     def __init__(
         self,
         featurizer: QueryFeaturizer,
-        aggregator: LinearAggregator,
+        aggregator: Aggregator,
         *,
         scope: CandidateScope = CandidateScope.ALL,
     ) -> None:
         num_features = len(featurizer.feature_names())
-        if num_features != aggregator.weights.numel():
+        if num_features != aggregator.num_features:
             raise ConfigurationError(
                 f"featurizer yields {num_features} features but the aggregator "
-                f"was fitted on {aggregator.weights.numel()}"
+                f"was fitted on {aggregator.num_features}"
             )
         self._featurizer = featurizer
         self._aggregator = aggregator

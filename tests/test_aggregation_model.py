@@ -226,6 +226,13 @@ class TestLinearAggregator:
 
         assert bool((model.score(features[:, :-1]).argmax(dim=1) == 0).all())
 
+    def test_fits_a_single_candidate_row(self) -> None:
+        single = TrainingSet(torch.ones(1, 1, 3), torch.ones(1, 1, dtype=torch.bool))
+
+        model = LinearAggregator.fit(single, AggregatorConfig())
+
+        assert model.scale.tolist() == [1.0, 1.0, 1.0]
+
     def test_rejects_wrong_feature_count(self, separable_set: TrainingSet) -> None:
         model = LinearAggregator.fit(separable_set, AggregatorConfig())
 

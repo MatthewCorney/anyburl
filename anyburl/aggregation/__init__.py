@@ -7,7 +7,8 @@ from .features import (
     build_features,
     column_of,
 )
-from .model import AggregatorConfig, LinearAggregator
+from .model import Aggregator, AggregatorConfig, LinearAggregator
+from .residual import JointFeaturizer, ResidualAggregator
 from .scorer import AggregatedScorer
 from .shared import SharedFeature, SharedFeaturizer, build_shared_features
 from .training import (
@@ -23,15 +24,18 @@ from .training import (
 
 __all__ = [
     "AggregatedScorer",
+    "Aggregator",
     "AggregatorConfig",
     "CandidateFeature",
     "CandidateFeaturizer",
     "CandidateSampling",
     "CandidateScope",
+    "JointFeaturizer",
     "KnownAnswers",
     "LinearAggregator",
     "QueryFeaturizer",
     "RankingQuery",
+    "ResidualAggregator",
     "SharedFeature",
     "SharedFeaturizer",
     "TrainingSet",
