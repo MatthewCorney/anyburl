@@ -1,7 +1,7 @@
 """Link prediction evaluation: MRR and Hits@K metrics."""
 
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import assert_never
@@ -27,6 +27,9 @@ such as a learned aggregator.
 
 TIE_MIDPOINT_FRACTION: float = 0.5
 """Share of a tie group counted as ranking above the target under AVERAGE."""
+
+SOLE_SCORER: str = "scorer"
+"""Label of the one scorer :meth:`LinkPredictionEvaluator.rank_queries` ranks."""
 
 
 class TieHandling(StrEnum):
@@ -221,69 +224,132 @@ class LinkPredictionEvaluator:
         ConfigurationError
             If the triples span more than one edge type.
         """
-        if not test_triples:
-            return ()
+        return rank_queries_with_each(
+            {SOLE_SCORER: self._predictor}, self._graph, test_triples, self._config
+        )[SOLE_SCORER]
 
-        edge_types = {triple.edge_type for triple in test_triples}
-        if len(edge_types) > 1:
-            raise ConfigurationError(
-                f"test triples must share one edge type, got {sorted(edge_types)}"
-            )
-        head_to_tails, tail_to_heads = self._build_adjacency_index(edge_types.pop())
 
-        query_ranks: list[QueryRank] = []
-        for triple in test_triples:
-            tail_rank = self._rank(
-                self._predictor.score_tails(triple.head_id),
+@dataclass(frozen=True, slots=True)
+class _Query:
+    """One query of a test triple, with the answers filtered from it."""
+
+    direction: QueryDirection
+    entity_id: int
+    target_id: int
+    known: set[int]
+
+    def scores(self, scorer: EntityScorer) -> torch.Tensor:
+        """Return ``scorer``'s score for every candidate of this query."""
+        match self.direction:
+            case QueryDirection.TAIL:
+                return scorer.score_tails(self.entity_id)
+            case QueryDirection.HEAD:
+                return scorer.score_heads(self.entity_id)
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def rank(self, scores: torch.Tensor, config: EvaluationConfig) -> float:
+        """Rank the target among ``scores``, filtering known answers if configured."""
+        if config.filter_known:
+            scores = _filter_known(scores, self.target_id, self.known)
+        return rank_with_ties(scores, self.target_id, config.tie_handling)
+
+
+def rank_queries_with_each(
+    scorers: Mapping[str, EntityScorer],
+    known: HeteroGraph,
+    test_triples: Sequence[Triple],
+    config: EvaluationConfig,
+) -> dict[str, tuple[QueryRank, ...]]:
+    """Rank every query of one relation's triples under each of several scorers.
+
+    Each query is scored by every scorer before the next query, and queries
+    are visited grouped by direction and entity. Scorers sharing a
+    :class:`~anyburl.prediction.RuleEvidence` then ground each query once.
+
+    Parameters
+    ----------
+    scorers : Mapping[str, EntityScorer]
+        The scorers, by label.
+    known : HeteroGraph
+        The known triples filtered from each query's candidates.
+    test_triples : Sequence[Triple]
+        Test triples, all of one relation. Each yields a tail query
+        followed by a head query.
+    config : EvaluationConfig
+        Evaluation configuration.
+
+    Returns
+    -------
+    dict[str, tuple[QueryRank, ...]]
+        Each scorer's ranks, two per triple, in triple order.
+
+    Raises
+    ------
+    ConfigurationError
+        If the triples span more than one edge type.
+    """
+    queries = _queries_of(known, test_triples)
+    visit_order = sorted(
+        range(len(queries)),
+        key=lambda index: (queries[index].direction, queries[index].entity_id),
+    )
+    ranks = {label: [0.0] * len(queries) for label in scorers}
+    for index in visit_order:
+        query = queries[index]
+        for label, scorer in scorers.items():
+            ranks[label][index] = query.rank(query.scores(scorer), config)
+    return {
+        label: tuple(
+            QueryRank(query.direction, query.target_id, rank)
+            for query, rank in zip(queries, label_ranks, strict=True)
+        )
+        for label, label_ranks in ranks.items()
+    }
+
+
+def _queries_of(known: HeteroGraph, test_triples: Sequence[Triple]) -> list[_Query]:
+    """Return each triple's tail query then head query."""
+    if not test_triples:
+        return []
+    edge_types = {triple.edge_type for triple in test_triples}
+    if len(edge_types) > 1:
+        raise ConfigurationError(
+            f"test triples must share one edge type, got {sorted(edge_types)}"
+        )
+    head_to_tails, tail_to_heads = _adjacency_index(known, edge_types.pop())
+    queries: list[_Query] = []
+    for triple in test_triples:
+        queries.append(
+            _Query(
+                QueryDirection.TAIL,
+                triple.head_id,
                 triple.tail_id,
                 head_to_tails.get(triple.head_id, set()),
             )
-            head_rank = self._rank(
-                self._predictor.score_heads(triple.tail_id),
+        )
+        queries.append(
+            _Query(
+                QueryDirection.HEAD,
+                triple.tail_id,
                 triple.head_id,
                 tail_to_heads.get(triple.tail_id, set()),
             )
-            query_ranks.extend(
-                (
-                    QueryRank(QueryDirection.TAIL, triple.tail_id, tail_rank),
-                    QueryRank(QueryDirection.HEAD, triple.head_id, head_rank),
-                )
-            )
-        return tuple(query_ranks)
+        )
+    return queries
 
-    def _rank(self, scores: torch.Tensor, target: int, known: set[int]) -> float:
-        """Rank ``target`` among ``scores``, filtering ``known`` if configured.
 
-        Parameters
-        ----------
-        scores : Tensor
-            1-D score tensor over all candidates.
-        target : int
-            The correct candidate.
-        known : set[int]
-            Candidates already known to be true for this query.
-
-        Returns
-        -------
-        float
-            The 1-based rank of ``target``.
-        """
-        if self._config.filter_known:
-            scores = _filter_known(scores, target, known)
-        return rank_with_ties(scores, target, self._config.tie_handling)
-
-    def _build_adjacency_index(
-        self,
-        edge_type: EdgeTypeTuple,
-    ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
-        """Build ``(head_to_tails, tail_to_heads)`` maps of known triples."""
-        ei = self._graph.edge_index(edge_type)
-        head_to_tails: dict[int, set[int]] = defaultdict(set)
-        tail_to_heads: dict[int, set[int]] = defaultdict(set)
-        for head, tail in zip(ei[0].tolist(), ei[1].tolist(), strict=True):
-            head_to_tails[head].add(tail)
-            tail_to_heads[tail].add(head)
-        return dict(head_to_tails), dict(tail_to_heads)
+def _adjacency_index(
+    graph: HeteroGraph, edge_type: EdgeTypeTuple
+) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    """Build ``(head_to_tails, tail_to_heads)`` maps of known triples."""
+    ei = graph.edge_index(edge_type)
+    head_to_tails: dict[int, set[int]] = defaultdict(set)
+    tail_to_heads: dict[int, set[int]] = defaultdict(set)
+    for head, tail in zip(ei[0].tolist(), ei[1].tolist(), strict=True):
+        head_to_tails[head].add(tail)
+        tail_to_heads[tail].add(head)
+    return dict(head_to_tails), dict(tail_to_heads)
 
 
 def rank_queries_by_edge_type(

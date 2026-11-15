@@ -9,6 +9,7 @@ from anyburl.evaluation import (
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
     TieHandling,
+    rank_queries_with_each,
     rank_with_ties,
 )
 from anyburl.exceptions import ConfigurationError
@@ -259,3 +260,70 @@ def test_rank_queries_rejects_mixed_edge_types(
 
     with pytest.raises(ConfigurationError, match="one edge type"):
         evaluator.rank_queries(triples)
+
+
+class _RecordingScorer:
+    """Scores every candidate zero and records which queries it was asked."""
+
+    def __init__(self, label: str, calls: list[tuple[str, str, int]]) -> None:
+        self._label = label
+        self._calls = calls
+
+    def score_tails(self, head_id: int) -> torch.Tensor:
+        self._calls.append((self._label, "tail", head_id))
+        return torch.zeros(3)
+
+    def score_heads(self, tail_id: int) -> torch.Tensor:
+        self._calls.append((self._label, "head", tail_id))
+        return torch.zeros(3)
+
+
+def _lives_in(head_id: int, tail_id: int) -> Triple:
+    return Triple(
+        head_id=head_id,
+        tail_id=tail_id,
+        head_type="person",
+        tail_type="city",
+        relation="lives_in",
+    )
+
+
+class TestRankQueriesWithEach:
+    def test_matches_ranking_each_scorer_alone(
+        self, perfect_eval_graph: HeteroGraph, cyclic_rule: Rule
+    ) -> None:
+        predictor = RulePredictor(
+            perfect_eval_graph, [(cyclic_rule, metrics_with(confidence=0.9))]
+        )
+        scorers = {"rules": predictor, "negative": _NegativeScorer()}
+        triples = [_lives_in(2, 0), _lives_in(0, 1), _lives_in(1, 2), _lives_in(0, 2)]
+        config = EvaluationConfig()
+
+        ranked = rank_queries_with_each(scorers, perfect_eval_graph, triples, config)
+
+        for label, scorer in scorers.items():
+            alone = LinkPredictionEvaluator(scorer, perfect_eval_graph, config)
+            assert ranked[label] == alone.rank_queries(triples)
+
+    def test_scores_each_query_with_every_scorer_in_turn(
+        self, perfect_eval_graph: HeteroGraph
+    ) -> None:
+        calls: list[tuple[str, str, int]] = []
+        scorers = {
+            label: _RecordingScorer(label, calls) for label in ("first", "second")
+        }
+        triples = [_lives_in(2, 0), _lives_in(0, 1), _lives_in(2, 1)]
+
+        rank_queries_with_each(scorers, perfect_eval_graph, triples, EvaluationConfig())
+
+        queries = [(direction, entity) for _, direction, entity in calls[::2]]
+        assert [label for label, _, _ in calls] == ["first", "second"] * 6
+        assert calls[1::2] == [("second", *query) for query in queries]
+        assert queries == sorted(queries)
+
+    def test_empty_triples_give_no_ranks(self, perfect_eval_graph: HeteroGraph) -> None:
+        ranked = rank_queries_with_each(
+            {"negative": _NegativeScorer()}, perfect_eval_graph, [], EvaluationConfig()
+        )
+
+        assert ranked == {"negative": ()}

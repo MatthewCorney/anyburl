@@ -72,6 +72,7 @@ from .evaluation import (
     QueryRank,
     TieHandling,
     rank_queries_by_edge_type,
+    rank_queries_with_each,
     summarize_ranks,
 )
 from .exceptions import (
@@ -226,6 +227,7 @@ __all__ = [
     "build_walk_engine",
     "concat_training_sets",
     "rank_queries_by_edge_type",
+    "rank_queries_with_each",
     "ranking_queries",
     "relation_degrees",
     "split_target_edges",

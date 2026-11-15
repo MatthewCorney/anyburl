@@ -61,6 +61,28 @@ class _QueryChainEvidence:
         )
 
 
+@dataclass(slots=True)
+class _QueryMemo:
+    """What has been computed so far for the most recent query.
+
+    Parameters
+    ----------
+    key : tuple[QueryDirection, int]
+        The query's direction and entity.
+    firings : Firings | None
+        Its acyclic rule firings, once computed.
+    chains : _QueryChainEvidence | None
+        Its chain evidence, once computed.
+    reached : Tensor | None
+        Its reached candidates, once computed.
+    """
+
+    key: tuple[QueryDirection, int]
+    firings: Firings | None = None
+    chains: _QueryChainEvidence | None = None
+    reached: Tensor | None = None
+
+
 class RuleEvidence:
     """The evidence one relation's rules give for each candidate of a query.
 
@@ -68,6 +90,9 @@ class RuleEvidence:
     :class:`~anyburl.prediction.RulePredictor` and
     :class:`~anyburl.aggregation.AggregatedScorer` combine this evidence into
     a ranking. AC2 rules are ignored.
+
+    The most recent query's firings, chain evidence and reached candidates
+    are kept, so several scorers ranking the same query ground it once.
 
     Parameters
     ----------
@@ -118,9 +143,7 @@ class RuleEvidence:
         self._acyclic = AcyclicScorer(
             graph.cached(AcyclicIndex), results, config.unseen_negatives
         )
-        self._latest: tuple[tuple[QueryDirection, int], _QueryChainEvidence] | None = (
-            None
-        )
+        self._memo: _QueryMemo | None = None
 
     @property
     def head_edge_type(self) -> EdgeTypeTuple:
@@ -159,33 +182,37 @@ class RuleEvidence:
 
     def acyclic_firings(self, direction: QueryDirection, query_id: int) -> Firings:
         """Return every acyclic rule firing for one query."""
-        match direction:
-            case QueryDirection.TAIL:
-                return self._acyclic.tail_firings(query_id)
-            case QueryDirection.HEAD:
-                return self._acyclic.head_firings(query_id)
-            case _ as unreachable:
-                assert_never(unreachable)
+        memo = self._memo_for(direction, query_id)
+        if memo.firings is None:
+            match direction:
+                case QueryDirection.TAIL:
+                    memo.firings = self._acyclic.tail_firings(query_id)
+                case QueryDirection.HEAD:
+                    memo.firings = self._acyclic.head_firings(query_id)
+                case _ as unreachable:
+                    assert_never(unreachable)
+        return memo.firings
+
+    def _memo_for(self, direction: QueryDirection, query_id: int) -> _QueryMemo:
+        """Return this query's memo, starting a new one for a new query."""
+        key = (direction, query_id)
+        if self._memo is None or self._memo.key != key:
+            self._memo = _QueryMemo(key)
+        return self._memo
 
     def _query_chain_evidence(
         self, direction: QueryDirection, query_id: int
     ) -> _QueryChainEvidence:
-        """Return every chain's evidence for one query.
-
-        The latest query's evidence is kept, so asking for a query's
-        :meth:`reached_candidates` and then its evidence grounds it once.
-        """
-        key = (direction, query_id)
-        if self._latest is not None and self._latest[0] == key:
-            return self._latest[1]
-        found = _QueryChainEvidence.concat(
-            [
-                side_evidence(side, query_id, self._weighting)
-                for side in self.sides(direction)
-            ]
-        )
-        self._latest = (key, found)
-        return found
+        """Return every chain's evidence for one query."""
+        memo = self._memo_for(direction, query_id)
+        if memo.chains is None:
+            memo.chains = _QueryChainEvidence.concat(
+                [
+                    side_evidence(side, query_id, self._weighting)
+                    for side in self.sides(direction)
+                ]
+            )
+        return memo.chains
 
     def reached_candidates(self, direction: QueryDirection, query_id: int) -> Tensor:
         """Return the sorted ids of candidates some rule gives a positive score.
@@ -203,11 +230,15 @@ class RuleEvidence:
         Tensor
             Unique candidate ids, ascending.
         """
-        acyclic_ids, _ = self.acyclic_firings(direction, query_id)
-        found = self._query_chain_evidence(direction, query_id).side
-        chain_ids = found.candidates[found.contributions > 0]
-        reached: Tensor = torch.unique(torch.cat([chain_ids, acyclic_ids]))
-        return reached
+        memo = self._memo_for(direction, query_id)
+        if memo.reached is None:
+            acyclic_ids, _ = self.acyclic_firings(direction, query_id)
+            found = self._query_chain_evidence(direction, query_id).side
+            is_reached = torch.zeros(self.num_candidates(direction), dtype=torch.bool)
+            is_reached[found.candidates[found.contributions > 0]] = True
+            is_reached[acyclic_ids] = True
+            memo.reached = is_reached.nonzero().flatten()
+        return memo.reached
 
     def chain_evidence(
         self,

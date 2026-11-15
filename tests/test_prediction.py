@@ -14,6 +14,7 @@ from anyburl.prediction import (
     GroundingWeighting,
     Prediction,
     PredictionConfig,
+    RuleEvidence,
     RuleFiring,
     RulePredictor,
 )
@@ -675,3 +676,62 @@ def test_unseen_negatives_reorder_candidates(two_chain_graph: HeteroGraph) -> No
 
     assert raw[1] > raw[2]
     assert corrected[2] > corrected[1]
+
+
+_NUM_CITIES = 3
+"""Query ids valid in both directions of ``evaluator_graph``."""
+
+
+def _memo_results() -> list[tuple[Rule, RuleMetrics]]:
+    """A cyclic rule and a subject-grounded AC1 rule over the same chain."""
+    return [
+        (cyclic_born_in_near(), metrics_with(confidence=0.25)),
+        (subject_grounded(0), metrics_with(confidence=0.5)),
+    ]
+
+
+class TestRuleEvidenceMemo:
+    @pytest.fixture
+    def evidence(self, evaluator_graph: HeteroGraph) -> RuleEvidence:
+        return RulePredictor(evaluator_graph, _memo_results()).evidence
+
+    def test_reached_candidates_unites_chain_and_acyclic_evidence(
+        self, evidence: RuleEvidence
+    ) -> None:
+        for direction in QueryDirection:
+            for query_id in range(_NUM_CITIES):
+                acyclic_ids, _ = evidence.acyclic_firings(direction, query_id)
+                chains = evidence.chain_evidence(direction, query_id)
+                chain_ids = torch.nonzero(chains.contributions.sum(dim=0) > 0)
+                expected = torch.unique(torch.cat([chain_ids.flatten(), acyclic_ids]))
+
+                reached = evidence.reached_candidates(direction, query_id)
+
+                assert reached.tolist() == expected.tolist()
+
+    def test_repeated_query_reuses_its_firings(self, evidence: RuleEvidence) -> None:
+        first = evidence.acyclic_firings(QueryDirection.TAIL, 0)
+
+        assert evidence.acyclic_firings(QueryDirection.TAIL, 0) is first
+
+    def test_alternating_queries_match_fresh_evidence(
+        self, evaluator_graph: HeteroGraph, evidence: RuleEvidence
+    ) -> None:
+        queries = [
+            (direction, query_id)
+            for query_id in range(_NUM_CITIES)
+            for direction in QueryDirection
+        ]
+
+        for direction, query_id in queries * 2:
+            fresh = RulePredictor(evaluator_graph, _memo_results()).evidence
+            reached = evidence.reached_candidates(direction, query_id)
+            ids, confidences = evidence.acyclic_firings(direction, query_id)
+            fresh_ids, fresh_confidences = fresh.acyclic_firings(direction, query_id)
+
+            assert (
+                reached.tolist()
+                == fresh.reached_candidates(direction, query_id).tolist()
+            )
+            assert ids.tolist() == fresh_ids.tolist()
+            assert confidences.tolist() == fresh_confidences.tolist()
