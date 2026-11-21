@@ -14,51 +14,16 @@ from ..exceptions import ConfigurationError
 from ..graph import HeteroGraph
 from ..metrics import RuleMetrics
 from ..rule import Rule, RuleType
+from .batch import ChainSideBatch, QueryChainEvidence
 from .grounding import build_groundings
 from .records import AcyclicEvidence, ChainEvidence, PredictionConfig
 from .scoring import GroundingWeighting
-from .sides import ChainSide, SideEvidence, build_chain_sides, side_evidence
+from .sides import ChainSide, SideEvidence, build_chain_sides
 
 __all__ = ["RuleEvidence"]
 
 UNSELECTED_SLOT: int = -1
 """Slot of a candidate left out of a restricted evidence query."""
-
-
-@dataclass(frozen=True, slots=True)
-class _QueryChainEvidence:
-    """Every body chain's evidence for one query, flattened across chains.
-
-    Parameters
-    ----------
-    rows : Tensor
-        Chain row of each entry.
-    side : SideEvidence
-        Candidate, contribution and grounding count of each entry.
-    """
-
-    rows: Tensor
-    side: SideEvidence
-
-    @classmethod
-    def concat(cls, found: Sequence[SideEvidence]) -> "_QueryChainEvidence":
-        """Flatten per-chain evidence, keeping each entry's chain row."""
-        sizes = torch.tensor(
-            [side.candidates.numel() for side in found], dtype=torch.long
-        )
-        empty = torch.zeros(0)
-        return cls(
-            rows=torch.repeat_interleave(torch.arange(len(found)), sizes),
-            side=SideEvidence(
-                candidates=torch.cat(
-                    [empty.long(), *(side.candidates for side in found)]
-                ),
-                contributions=torch.cat(
-                    [empty, *(side.contributions for side in found)]
-                ),
-                groundings=torch.cat([empty, *(side.groundings for side in found)]),
-            ),
-        )
 
 
 @dataclass(slots=True)
@@ -71,7 +36,7 @@ class _QueryMemo:
         The query's direction and entity.
     firings : Firings | None
         Its acyclic rule firings, once computed.
-    chains : _QueryChainEvidence | None
+    chains : QueryChainEvidence | None
         Its chain evidence, once computed.
     reached : Tensor | None
         Its reached candidates, once computed.
@@ -79,7 +44,7 @@ class _QueryMemo:
 
     key: tuple[QueryDirection, int]
     firings: Firings | None = None
-    chains: _QueryChainEvidence | None = None
+    chains: QueryChainEvidence | None = None
     reached: Tensor | None = None
 
 
@@ -138,8 +103,8 @@ class RuleEvidence:
             build_groundings(graph, results),
             config.unseen_negatives,
         )
-        self._tail_sides = tuple(tail_sides)
-        self._head_sides = tuple(head_sides)
+        self._tail_batch = ChainSideBatch.build(tail_sides, self._num_tails)
+        self._head_batch = ChainSideBatch.build(head_sides, self._num_heads)
         self._acyclic = AcyclicScorer(
             graph.cached(AcyclicIndex), results, config.unseen_negatives
         )
@@ -158,7 +123,7 @@ class RuleEvidence:
     @property
     def chains(self) -> tuple[tuple[BodyChain, RuleType], ...]:
         """The body chain and rule type of each :meth:`chain_evidence` row."""
-        return tuple((side.chain, side.rule_type) for side in self._tail_sides)
+        return tuple((side.chain, side.rule_type) for side in self._tail_batch.sides)
 
     def num_candidates(self, direction: QueryDirection) -> int:
         """Return how many entities a query in ``direction`` ranks."""
@@ -172,11 +137,15 @@ class RuleEvidence:
 
     def sides(self, direction: QueryDirection) -> tuple[ChainSide, ...]:
         """Return each body chain's rules as seen from ``direction``."""
+        return self._batch(direction).sides
+
+    def _batch(self, direction: QueryDirection) -> ChainSideBatch:
+        """Return the chain sides scoring queries in ``direction``."""
         match direction:
             case QueryDirection.TAIL:
-                return self._tail_sides
+                return self._tail_batch
             case QueryDirection.HEAD:
-                return self._head_sides
+                return self._head_batch
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -202,17 +171,33 @@ class RuleEvidence:
 
     def _query_chain_evidence(
         self, direction: QueryDirection, query_id: int
-    ) -> _QueryChainEvidence:
+    ) -> QueryChainEvidence:
         """Return every chain's evidence for one query."""
         memo = self._memo_for(direction, query_id)
         if memo.chains is None:
-            memo.chains = _QueryChainEvidence.concat(
-                [
-                    side_evidence(side, query_id, self._weighting)
-                    for side in self.sides(direction)
-                ]
-            )
+            memo.chains = self._batch(direction).evidence(query_id, self._weighting)
         return memo.chains
+
+    def chain_contributions(
+        self, direction: QueryDirection, query_id: int
+    ) -> SideEvidence:
+        """Return every chain's contribution to each candidate it reaches.
+
+        Parameters
+        ----------
+        direction : QueryDirection
+            ``TAIL`` to score tails of head ``query_id``, ``HEAD`` to score
+            heads of tail ``query_id``.
+        query_id : int
+            The entity being queried.
+
+        Returns
+        -------
+        SideEvidence
+            One entry per body chain and candidate it grounds, chains in the
+            order of :attr:`chains`. A candidate appears once per chain.
+        """
+        return self._query_chain_evidence(direction, query_id).side
 
     def reached_candidates(self, direction: QueryDirection, query_id: int) -> Tensor:
         """Return the sorted ids of candidates some rule gives a positive score.

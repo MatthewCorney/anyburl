@@ -13,14 +13,11 @@ from ..metrics import RuleMetrics, aggregate_confidence
 from ..rule import Rule, RuleType, TermKind
 from ..rule.quality import corrected_confidence
 from .grounding import ChainGrounding, body_chain_key
-from .scoring import GroundingWeighting, evidence_weights
 
 __all__ = [
     "ChainSide",
     "SideEvidence",
-    "apply_side",
     "build_chain_sides",
-    "side_evidence",
 ]
 
 ChainFetch = Callable[[int], tuple[Tensor, Tensor]]
@@ -81,15 +78,6 @@ class ChainSide:
             return self.shared_confidence
         return self.query_confidences.get(query_id)
 
-    def candidate_confidence_of(self, candidates: Tensor) -> Tensor:
-        """Return the confidence grounded on each of ``candidates``, else 0."""
-        if self.candidate_ids.numel() == 0:
-            return torch.zeros(candidates.numel())
-        positions = torch.searchsorted(self.candidate_ids, candidates)
-        positions = positions.clamp(max=self.candidate_ids.numel() - 1)
-        is_grounded = self.candidate_ids[positions] == candidates
-        return torch.where(is_grounded, self.candidate_values[positions], 0.0)
-
 
 @dataclass(frozen=True, slots=True)
 class SideEvidence:
@@ -108,81 +96,6 @@ class SideEvidence:
     candidates: Tensor
     contributions: Tensor
     groundings: Tensor
-
-
-def apply_side(
-    complement: Tensor,
-    side: ChainSide,
-    query_id: int,
-    weighting: GroundingWeighting,
-) -> None:
-    """Fold one chain side's evidence into a noisy-or complement, in place.
-
-    Parameters
-    ----------
-    complement : Tensor
-        Running ``prod(1 - contribution)`` over all candidates.
-    side : ChainSide
-        The chain side to apply.
-    query_id : int
-        The entity being queried.
-    weighting : GroundingWeighting
-        How grounding counts weigh on each contribution.
-    """
-    candidates, groundings = side.fetch(query_id)
-    if candidates.numel() == 0:
-        return
-    weights = evidence_weights(groundings, weighting)
-
-    confidence = side.confidence_for(query_id)
-    if confidence is not None:
-        complement[candidates] *= (1.0 - confidence) ** weights
-
-    if side.candidate_ids.numel() == 0:
-        return
-    reachable = torch.isin(side.candidate_ids, candidates)
-    if not bool(reachable.any()):
-        return
-    matching_ids = side.candidate_ids[reachable]
-    dense_weights = torch.zeros(complement.numel())
-    dense_weights[candidates] = weights
-    complement[matching_ids] *= (1.0 - side.candidate_values[reachable]) ** (
-        dense_weights[matching_ids]
-    )
-
-
-def side_evidence(
-    side: ChainSide, query_id: int, weighting: GroundingWeighting
-) -> SideEvidence:
-    """Return one chain side's contribution to each candidate it reaches.
-
-    Parameters
-    ----------
-    side : ChainSide
-        The chain side to read.
-    query_id : int
-        The entity being queried.
-    weighting : GroundingWeighting
-        How grounding counts weigh on each contribution.
-
-    Returns
-    -------
-    SideEvidence
-        The grounded candidates with their contributions and counts.
-    """
-    candidates, groundings = side.fetch(query_id)
-    counts = groundings.to(torch.float)
-    confidence = side.confidence_for(query_id)
-    has_no_rule = confidence is None and side.candidate_ids.numel() == 0
-    if candidates.numel() == 0 or has_no_rule:
-        return SideEvidence(candidates, torch.zeros(candidates.numel()), counts)
-
-    weights = evidence_weights(groundings, weighting)
-    complement = torch.ones(candidates.numel())
-    if confidence is not None:
-        complement *= (1.0 - confidence) ** weights
-    complement *= (1.0 - side.candidate_confidence_of(candidates)) ** weights
-    return SideEvidence(candidates, 1.0 - complement, counts)
 
 
 @dataclass(slots=True)

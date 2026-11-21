@@ -1,5 +1,7 @@
 """Tests for RulePredictor and Prediction."""
 
+import math
+
 import pytest
 import torch
 from torch_geometric.data import HeteroData
@@ -19,7 +21,7 @@ from anyburl.prediction import (
     RulePredictor,
 )
 from anyburl.prediction.grounding import body_chain_key, build_groundings
-from anyburl.prediction.scoring import TIE_BREAK_WEIGHT
+from anyburl.prediction.scoring import GROUNDING_WEIGHT_OFFSET, TIE_BREAK_WEIGHT
 from anyburl.rule import Atom, Rule, RuleType, Term
 from anyburl.rule.quality import corrected_confidence
 from tests.rules import (
@@ -735,3 +737,50 @@ class TestRuleEvidenceMemo:
             )
             assert ids.tolist() == fresh_ids.tolist()
             assert confidences.tolist() == fresh_confidences.tolist()
+
+
+_NUM_QUERIES = {QueryDirection.TAIL: 4, QueryDirection.HEAD: _NUM_CITIES}
+
+
+def _batch_results() -> list[tuple[Rule, RuleMetrics]]:
+    return [
+        (cyclic_born_in_near(), metrics_with(confidence=0.25)),
+        (subject_grounded(0), metrics_with(confidence=0.5)),
+        (object_grounded(1), metrics_with(confidence=0.4)),
+    ]
+
+
+def _per_chain_contributions(
+    evidence: RuleEvidence, direction: QueryDirection, query_id: int
+) -> list[tuple[int, float, float]]:
+    expected: list[tuple[int, float, float]] = []
+    for side in evidence.sides(direction):
+        candidates, counts = side.fetch(query_id)
+        query_confidence = side.confidence_for(query_id) or 0.0
+        for candidate, count in zip(candidates.tolist(), counts.tolist(), strict=True):
+            weight = math.log2(GROUNDING_WEIGHT_OFFSET + count)
+            grounded = side.candidate_confidences.get(candidate, 0.0)
+            complement = (1.0 - query_confidence) ** weight * (1.0 - grounded) ** weight
+            expected.append((candidate, 1.0 - complement, float(count)))
+    return expected
+
+
+class TestChainContributions:
+    @pytest.fixture
+    def evidence(self, evaluator_graph: HeteroGraph) -> RuleEvidence:
+        config = PredictionConfig(grounding_weighting=GroundingWeighting.LOG_COUNT)
+        return RulePredictor(evaluator_graph, _batch_results(), config=config).evidence
+
+    @pytest.mark.parametrize("direction", list(QueryDirection))
+    def test_matches_each_chain_computed_alone(
+        self, evidence: RuleEvidence, direction: QueryDirection
+    ) -> None:
+        for query_id in range(_NUM_QUERIES[direction]):
+            found = evidence.chain_contributions(direction, query_id)
+            expected = _per_chain_contributions(evidence, direction, query_id)
+
+            assert found.candidates.tolist() == [c for c, _, _ in expected]
+            assert found.contributions.tolist() == pytest.approx(
+                [c for _, c, _ in expected], abs=1e-6
+            )
+            assert found.groundings.tolist() == [g for _, _, g in expected]

@@ -16,7 +16,6 @@ from ..rule import Rule
 from .evidence import RuleEvidence
 from .records import Prediction, PredictionConfig, RuleFiring
 from .scoring import TIE_BREAK_WEIGHT, ConfidenceAggregation, weight_for_candidate
-from .sides import apply_side
 
 __all__ = ["DEFAULT_TOP_TAILS", "RulePredictor", "combine_evidence"]
 
@@ -269,26 +268,19 @@ def combine_evidence(
     Tensor
         One score per candidate.
     """
-    sides = evidence.sides(direction)
-    candidates, confidences = evidence.acyclic_firings(direction, query_id)
-    num_candidates = evidence.num_candidates(direction)
-    weighting = evidence.weighting
-    log_complement = torch.zeros(num_candidates)
-    log_complement.index_add_(0, candidates, torch.log1p(-confidences))
+    acyclic_ids, confidences = evidence.acyclic_firings(direction, query_id)
+    chains = evidence.chain_contributions(direction, query_id)
+    log_complement = torch.zeros(evidence.num_candidates(direction))
+    log_complement.index_add_(0, acyclic_ids, torch.log1p(-confidences))
     complement = torch.exp(log_complement)
+    complement.scatter_reduce_(0, chains.candidates, 1.0 - chains.contributions, "prod")
     match aggregation:
         case ConfidenceAggregation.NOISY_OR:
-            for side in sides:
-                apply_side(complement, side, query_id, weighting)
             return torch.ones_like(complement) - complement
         case ConfidenceAggregation.MAXIMUM:
-            best = torch.zeros(num_candidates)
-            best.scatter_reduce_(0, candidates, confidences, "amax")
-            for side in sides:
-                side_complement = torch.ones(num_candidates)
-                apply_side(side_complement, side, query_id, weighting)
-                torch.maximum(best, 1.0 - side_complement, out=best)
-                complement *= side_complement
+            best = torch.zeros_like(complement)
+            best.scatter_reduce_(0, acyclic_ids, confidences, "amax")
+            best.scatter_reduce_(0, chains.candidates, chains.contributions, "amax")
             return best + TIE_BREAK_WEIGHT * (1.0 - complement)
         case _ as unreachable:
             assert_never(unreachable)
