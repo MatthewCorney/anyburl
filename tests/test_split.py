@@ -1,4 +1,4 @@
-"""Tests for holding out target-relation edges."""
+"""Tests for holding out target-relation test and validation edges."""
 
 import pytest
 import torch
@@ -9,11 +9,17 @@ from anyburl.split import (
     InverseEdgeHandling,
     SplitConfig,
     split_target_edges,
+    split_with_validation,
 )
 
 TARGET = ("author", "to", "paper")
 INVERSE = ("paper", "to", "author")
 NUM_EDGES = 10
+VALIDATION_GRAPH_EDGES = 20
+HELD_OUT_TEST_FRACTION = 0.25
+VALIDATION_FRACTION = 0.2
+NUM_HELD_OUT_TEST = 5
+NUM_VALIDATION = 3
 
 
 @pytest.fixture
@@ -231,3 +237,139 @@ def test_explicit_inverse_with_keep_raises() -> None:
             inverse_edge_type=RENAMED_INVERSE,
             inverse_handling=InverseEdgeHandling.KEEP,
         )
+
+
+@pytest.fixture
+def twenty_mirrored_edges() -> HeteroData:
+    """Twenty author-paper edges, stored in both directions."""
+    data = HeteroData()
+    data["author"].num_nodes = VALIDATION_GRAPH_EDGES
+    data["paper"].num_nodes = VALIDATION_GRAPH_EDGES
+    ids = torch.arange(VALIDATION_GRAPH_EDGES)
+    data[TARGET].edge_index = torch.stack([ids, ids])
+    data[INVERSE].edge_index = torch.stack([ids, ids])
+    return data
+
+
+@pytest.fixture
+def two_way_config() -> SplitConfig:
+    return SplitConfig(target_edge_type=TARGET, test_fraction=HELD_OUT_TEST_FRACTION)
+
+
+def _pairs(edge_index: torch.Tensor) -> set[tuple[int, int]]:
+    return set(zip(edge_index[0].tolist(), edge_index[1].tolist(), strict=True))
+
+
+class TestSplitWithValidation:
+    def test_test_set_matches_two_way_split(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        """Existing test-set results stay comparable."""
+        two_way = split_target_edges(twenty_mirrored_edges, two_way_config)
+
+        split = split_with_validation(
+            twenty_mirrored_edges,
+            two_way_config,
+            validation_fraction=VALIDATION_FRACTION,
+        )
+
+        assert split.test_triples == two_way.test_triples
+        assert torch.equal(
+            split.train_data[TARGET].edge_index, two_way.train_data[TARGET].edge_index
+        )
+
+    def test_holds_out_fraction_of_training_edges(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        split = split_with_validation(
+            twenty_mirrored_edges,
+            two_way_config,
+            validation_fraction=VALIDATION_FRACTION,
+        )
+
+        assert len(split.test_triples) == NUM_HELD_OUT_TEST
+        assert len(split.validation_triples) == NUM_VALIDATION
+        assert split.fit_data[TARGET].edge_index.size(1) == (
+            VALIDATION_GRAPH_EDGES - NUM_HELD_OUT_TEST - NUM_VALIDATION
+        )
+
+    def test_partitions_target_edges(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        split = split_with_validation(
+            twenty_mirrored_edges,
+            two_way_config,
+            validation_fraction=VALIDATION_FRACTION,
+        )
+
+        fit = _pairs(split.fit_data[TARGET].edge_index)
+        validation = {(t.head_id, t.tail_id) for t in split.validation_triples}
+        test = {(t.head_id, t.tail_id) for t in split.test_triples}
+
+        assert fit.isdisjoint(validation)
+        assert fit.isdisjoint(test)
+        assert validation.isdisjoint(test)
+        assert fit | validation | test == _pairs(
+            twenty_mirrored_edges[TARGET].edge_index
+        )
+
+    def test_fit_data_drops_mirrors_of_held_out_edges(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        """Either held-out set left in reverse would be reachable in one hop."""
+        split = split_with_validation(
+            twenty_mirrored_edges,
+            two_way_config,
+            validation_fraction=VALIDATION_FRACTION,
+        )
+
+        reverse = split.fit_data[INVERSE].edge_index
+        surviving = set(zip(reverse[1].tolist(), reverse[0].tolist(), strict=True))
+        held_out = {
+            (t.head_id, t.tail_id)
+            for t in (*split.validation_triples, *split.test_triples)
+        }
+
+        assert surviving.isdisjoint(held_out)
+
+    def test_train_data_keeps_validation_edges(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        """Validation edges must count as known facts when ranking test triples."""
+        split = split_with_validation(
+            twenty_mirrored_edges,
+            two_way_config,
+            validation_fraction=VALIDATION_FRACTION,
+        )
+
+        validation = {(t.head_id, t.tail_id) for t in split.validation_triples}
+
+        assert validation <= _pairs(split.train_data[TARGET].edge_index)
+
+    def test_is_deterministic_for_a_seed(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        first = split_with_validation(twenty_mirrored_edges, two_way_config)
+        second = split_with_validation(twenty_mirrored_edges, two_way_config)
+
+        assert first.validation_triples == second.validation_triples
+
+    @pytest.mark.parametrize("fraction", [0.0, 1.0, -0.1, 1.5])
+    def test_invalid_validation_fraction_raises(
+        self,
+        twenty_mirrored_edges: HeteroData,
+        two_way_config: SplitConfig,
+        fraction: float,
+    ) -> None:
+        with pytest.raises(ConfigurationError, match="validation_fraction must be in"):
+            split_with_validation(
+                twenty_mirrored_edges, two_way_config, validation_fraction=fraction
+            )
+
+    def test_fraction_holding_out_nothing_names_validation(
+        self, twenty_mirrored_edges: HeteroData, two_way_config: SplitConfig
+    ) -> None:
+        with pytest.raises(ConfigurationError, match=r"validation_fraction 0\.01"):
+            split_with_validation(
+                twenty_mirrored_edges, two_way_config, validation_fraction=0.01
+            )

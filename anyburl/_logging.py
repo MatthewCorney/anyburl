@@ -12,7 +12,7 @@ def get_logger(name: str) -> logging.Logger:
     """Get the logger for a module of the ``anyburl`` package.
 
     Loggers follow the module hierarchy, so ``logging.getLogger("anyburl")``
-    configures the whole package and ``"anyburl.metrics"`` one subpackage.
+    configures the whole package and ``"anyburl.rule_evaluation"`` one subpackage.
 
     Parameters
     ----------

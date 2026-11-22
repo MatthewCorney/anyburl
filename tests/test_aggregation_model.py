@@ -21,9 +21,9 @@ from anyburl.aggregation import (
 from anyburl.core import QueryDirection, Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleMetrics
 from anyburl.prediction import RulePredictor
-from anyburl.rule import Rule
+from anyburl.rule import Rule, RuleMetrics
+from anyburl.rule_evaluation import RuleSet
 from anyburl.stratification import relation_degrees
 
 LIVES_IN = ("person", "lives_in", "city")
@@ -39,7 +39,7 @@ REACHED_SAMPLING = CandidateSampling(
 @pytest.fixture
 def featurizer(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> CandidateFeaturizer:
     predictor = RulePredictor(
-        evaluator_graph, [(cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3))]
+        evaluator_graph, RuleSet.of([(cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3))])
     )
     return CandidateFeaturizer(
         predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)

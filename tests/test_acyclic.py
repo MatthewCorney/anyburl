@@ -13,10 +13,11 @@ from anyburl.acyclic import (
 from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleEvaluator, RuleMetrics
 from anyburl.pipeline import AnyBURL, AnyBURLConfig
 from anyburl.prediction import RulePredictor
-from anyburl.rule import Rule, RuleConfig, RuleType, Term
+from anyburl.rule import Rule, RuleConfig, RuleMetrics, RuleType, Term
+from anyburl.rule_evaluation import RuleEvaluator, RuleSet
+from tests import adjacency
 from tests.rules import object_constant_rule, subject_constant_near_rule
 
 LIVES_IN = ("person", "lives_in", "city")
@@ -63,7 +64,9 @@ class TestAcyclicStepSampler:
         assert {step.anchor for step in steps} == set(WalkAnchor)
         for step in steps:
             source = 3 if step.anchor is WalkAnchor.HEAD else 0
-            neighbors = evaluator_graph.get_neighbors(source, step.body_edge_type)
+            neighbors = adjacency.neighbors(
+                evaluator_graph, source, step.body_edge_type
+            )
             assert step.neighbor_id in neighbors.tolist()
 
     def test_never_retraces_the_triple(self, evaluator_graph: HeteroGraph) -> None:
@@ -109,7 +112,9 @@ class TestAcyclicPrediction:
     def test_rule_scores_its_constant_for_matching_heads(
         self, evaluator_graph: HeteroGraph
     ) -> None:
-        results = [(object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2))]
+        results = RuleSet.of(
+            [(object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2))]
+        )
         predictor = RulePredictor(evaluator_graph, results)
 
         assert predictor.score_tails(2).tolist() == pytest.approx([0.5, 0.0, 0.0])
@@ -118,7 +123,9 @@ class TestAcyclicPrediction:
     def test_rule_scores_matching_heads_for_its_constant(
         self, evaluator_graph: HeteroGraph
     ) -> None:
-        results = [(object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2))]
+        results = RuleSet.of(
+            [(object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2))]
+        )
         predictor = RulePredictor(evaluator_graph, results)
 
         assert predictor.score_heads(0).tolist() == pytest.approx([0.5, 0, 0.5, 0])
@@ -127,7 +134,9 @@ class TestAcyclicPrediction:
     def test_subject_constant_rule_fires_in_both_directions(
         self, evaluator_graph: HeteroGraph
     ) -> None:
-        results = [(subject_constant_near_rule(1), RuleMetrics(1, 0.4, 0.25, 3))]
+        results = RuleSet.of(
+            [(subject_constant_near_rule(1), RuleMetrics(1, 0.4, 0.25, 3))]
+        )
         predictor = RulePredictor(evaluator_graph, results)
 
         assert predictor.score_tails(1).tolist() == pytest.approx([0.4] * 3)
@@ -136,10 +145,12 @@ class TestAcyclicPrediction:
     def test_firings_noisy_or_with_each_other(
         self, evaluator_graph: HeteroGraph
     ) -> None:
-        results = [
-            (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
-            (object_constant_rule(0, None), RuleMetrics(2, 0.5, 0.5, 4)),
-        ]
+        results = RuleSet.of(
+            [
+                (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
+                (object_constant_rule(0, None), RuleMetrics(2, 0.5, 0.5, 4)),
+            ]
+        )
         predictor = RulePredictor(evaluator_graph, results)
 
         assert predictor.score_tails(2)[0].item() == pytest.approx(0.75)

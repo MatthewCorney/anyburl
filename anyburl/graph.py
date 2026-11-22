@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import cast
 
-import torch
 from torch import Tensor
 from torch_geometric.data import HeteroData
 from torch_geometric.utils import to_torch_csr_tensor
@@ -96,9 +95,9 @@ class CsrIndex:
 class HeteroGraph:
     """Wraps a PyG ``HeteroData`` with precomputed CSR indices.
 
-    Provides neighbor lookup, per-edge-type CSR matrices and node and edge
-    counts, and caches the structures other components derive from it, so
-    every component working on one graph shares them.
+    Provides per-edge-type CSR indices and node and edge counts, and caches
+    the structures other components derive from it, so every component
+    working on one graph shares them.
 
     Parameters
     ----------
@@ -156,7 +155,6 @@ class HeteroGraph:
             )
             self._outgoing_edge_types[node_type] = matching
 
-        self._csr_matrix_cache: dict[EdgeTypeTuple, Tensor] = {}
         self._derived: dict[Callable[[HeteroGraph], object], object] = {}
 
         logger.debug(
@@ -186,67 +184,6 @@ class HeteroGraph:
         if build not in self._derived:
             self._derived[build] = build(self)
         return cast("T", self._derived[build])
-
-    def get_neighbors(self, node_id: int, edge_type: EdgeTypeTuple) -> Tensor:
-        """Return neighbor IDs reachable from ``node_id`` via ``edge_type``.
-
-        Parameters
-        ----------
-        node_id : int
-            Source node index.
-        edge_type : EdgeTypeTuple
-            The ``(src_type, relation, dst_type)`` edge type.
-
-        Returns
-        -------
-        Tensor
-            1-D tensor of destination node IDs.
-
-        Raises
-        ------
-        GraphSchemaError
-            If ``edge_type`` is unknown or has no edges.
-        """
-        idx = self.csr_index(edge_type)
-        start = int(idx.crow_indices[node_id].item())
-        end = int(idx.crow_indices[node_id + 1].item())
-        return idx.col_indices[start:end]
-
-    def get_csr_matrix(self, edge_type: EdgeTypeTuple) -> Tensor:
-        """Return a float CSR sparse tensor for ``edge_type``.
-
-        The matrix has shape ``(num_src, num_dst)`` with ones at
-        positions corresponding to edges. Cached after first call.
-
-        Parameters
-        ----------
-        edge_type : EdgeTypeTuple
-            The ``(src_type, relation, dst_type)`` edge type.
-
-        Returns
-        -------
-        Tensor
-            Sparse CSR float tensor.
-
-        Raises
-        ------
-        GraphSchemaError
-            If ``edge_type`` is unknown or has no edges.
-        """
-        cached = self._csr_matrix_cache.get(edge_type)
-        if cached is not None:
-            return cached
-
-        idx = self.csr_index(edge_type)
-        with suppress_sparse_csr_warning():
-            matrix = torch.sparse_csr_tensor(
-                idx.crow_indices,
-                idx.col_indices,
-                torch.ones(idx.col_indices.size(0), dtype=torch.float32),
-                size=(idx.num_src, idx.num_dst),
-            )
-        self._csr_matrix_cache[edge_type] = matrix
-        return matrix
 
     def node_count(self, node_type: str) -> int:
         """Return the number of nodes of the given type.

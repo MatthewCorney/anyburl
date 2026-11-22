@@ -9,6 +9,7 @@ from anyburl.chain import ChainScanner, PathCounter, build_csr_tables
 from anyburl.core import EdgeTypeTuple
 from anyburl.exceptions import GraphSchemaError, InvalidRuleError
 from anyburl.graph import HeteroGraph
+from tests import adjacency
 
 BORN_IN = ("person", "born_in", "city")
 NEAR = ("city", "near", "city")
@@ -26,14 +27,14 @@ def _reference_counts(
     Written independently of the production helpers so that agreement is
     evidence about the kernel rather than two copies of one mistake.
     """
-    product = graph.get_csr_matrix(signature[0])
+    product = adjacency.adjacency_matrix(graph, signature[0])
     for edge_type in signature[1:]:
-        product = product @ graph.get_csr_matrix(edge_type)
+        product = product @ adjacency.adjacency_matrix(graph, edge_type)
 
     predicted = _coordinates(product)
     if not predicted:
         return 0, 0
-    known = _coordinates(graph.get_csr_matrix(head_edge_type))
+    known = _coordinates(adjacency.adjacency_matrix(graph, head_edge_type))
     return len(predicted), len(predicted & known)
 
 
@@ -287,9 +288,9 @@ def _reference_reachable(
     graph: HeteroGraph, signature: tuple[EdgeTypeTuple, ...]
 ) -> tuple[set[int], set[int]]:
     """Oracle: rows and columns of the matmul product holding a non-zero."""
-    product = graph.get_csr_matrix(signature[0])
+    product = adjacency.adjacency_matrix(graph, signature[0])
     for edge_type in signature[1:]:
-        product = product @ graph.get_csr_matrix(edge_type)
+        product = product @ adjacency.adjacency_matrix(graph, edge_type)
     pairs = _coordinates(product)
     return {row for row, _ in pairs}, {col for _, col in pairs}
 
@@ -371,9 +372,11 @@ class TestPathCounter:
     def test_matches_the_dense_chain_product(
         self, simple_graph: HeteroGraph, chain: tuple[EdgeTypeTuple, ...]
     ) -> None:
-        product = simple_graph.get_csr_matrix(chain[0]).to_dense()
+        product = adjacency.adjacency_matrix(simple_graph, chain[0]).to_dense()
         for edge_type in chain[1:]:
-            product = product @ simple_graph.get_csr_matrix(edge_type).to_dense()
+            product = (
+                product @ adjacency.adjacency_matrix(simple_graph, edge_type).to_dense()
+            )
         counter = PathCounter(simple_graph)
 
         for source in range(product.size(0)):

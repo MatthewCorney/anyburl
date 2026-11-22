@@ -6,21 +6,14 @@ import torch
 from torch_geometric.data import HeteroData
 
 from anyburl.core import Triple
-from anyburl.factories import build_walk_engine
 from anyburl.graph import HeteroGraph
 from anyburl.walk import (
     NumbaWalkEngine,
     WalkConfig,
-    WalkStrategy,
 )
 from anyburl.walk._numba_graph import build_numba_graph_view
+from tests import adjacency
 from tests.reference_walker import ReferenceWalker
-
-
-def test_build_walk_engine_uniform_returns_numba(simple_graph: HeteroGraph) -> None:
-    config = WalkConfig(strategy=WalkStrategy.UNIFORM, seed=42)
-    engine = build_walk_engine(simple_graph, config)
-    assert isinstance(engine, NumbaWalkEngine)
 
 
 def _assert_path_valid(
@@ -32,7 +25,7 @@ def _assert_path_valid(
     assert path[0][0] == triple.head_id
     assert path[0][1] == triple.head_type
     for (src_id, src_type, relation), (dst_id, dst_type, _) in pairwise(path):
-        neighbors = graph.get_neighbors(src_id, (src_type, relation, dst_type))
+        neighbors = adjacency.neighbors(graph, src_id, (src_type, relation, dst_type))
         assert dst_id in neighbors.tolist()
     assert path[-1][0] == triple.tail_id
     assert path[-1][1] == triple.tail_type

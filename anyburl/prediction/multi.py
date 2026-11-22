@@ -4,7 +4,7 @@ from ..baselines import ZeroScorer
 from ..core import EdgeTypeTuple, EntityScorer
 from ..exceptions import ConfigurationError
 from ..graph import HeteroGraph
-from ..metrics import RuleSet
+from ..rule_evaluation import RuleSet
 from .predictor import RulePredictor
 from .records import Prediction, PredictionConfig
 

@@ -1,7 +1,6 @@
 """Apply learned rules to score candidate entities."""
 
 from collections import defaultdict
-from collections.abc import Sequence
 from typing import assert_never
 
 import torch
@@ -11,8 +10,7 @@ from .._logging import get_logger, progress
 from ..core import QueryDirection
 from ..exceptions import ConfigurationError
 from ..graph import HeteroGraph
-from ..metrics import RuleMetrics
-from ..rule import Rule
+from ..rule_evaluation import RuleSet
 from .evidence import RuleEvidence
 from .lexicographic import lexicographic_scores
 from .records import Prediction, PredictionConfig, RuleFiring
@@ -38,7 +36,7 @@ class RulePredictor:
     ----------
     graph : HeteroGraph
         The knowledge graph to ground rules against.
-    results : Sequence[tuple[Rule, RuleMetrics]]
+    results : RuleSet
         Rules paired with their evaluated metrics. All rules must
         predict the same head relation.
     config : PredictionConfig | None
@@ -54,7 +52,7 @@ class RulePredictor:
     def __init__(
         self,
         graph: HeteroGraph,
-        results: Sequence[tuple[Rule, RuleMetrics]],
+        results: RuleSet,
         *,
         config: PredictionConfig | None = None,
     ) -> None:

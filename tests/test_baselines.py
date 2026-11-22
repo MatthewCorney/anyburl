@@ -10,6 +10,7 @@ from anyburl.baselines import (
 )
 from anyburl.exceptions import InvalidRuleError
 from anyburl.graph import HeteroGraph
+from tests import adjacency
 
 TARGET = ("person", "lives_in", "city")
 BORN_IN = ("person", "born_in", "city")
@@ -64,10 +65,10 @@ def test_meta_path_scorer_counts_paths(evaluator_graph: HeteroGraph) -> None:
 
     scores = scorer.score_tails(0)
 
-    born = evaluator_graph.get_neighbors(0, BORN_IN)
+    born = adjacency.neighbors(evaluator_graph, 0, BORN_IN)
     expected = torch.zeros(evaluator_graph.node_count("city"))
     for city in born.tolist():
-        for reachable in evaluator_graph.get_neighbors(city, NEAR).tolist():
+        for reachable in adjacency.neighbors(evaluator_graph, city, NEAR).tolist():
             expected[reachable] += 1
     assert torch.equal(scores, expected)
 

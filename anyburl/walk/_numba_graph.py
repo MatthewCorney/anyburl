@@ -30,7 +30,7 @@ class NumbaGraphView:
 
     All node ids are local to their node type, matching
     :class:`~anyburl.graph.HeteroGraph` and
-    :class:`~anyburl.sampler.Triple` conventions.
+    :class:`~anyburl.core.Triple` conventions.
 
     Parameters
     ----------

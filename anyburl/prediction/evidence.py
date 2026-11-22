@@ -1,6 +1,5 @@
 """Ground learned rules and report their evidence for every candidate of a query."""
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import assert_never
 
@@ -12,8 +11,8 @@ from ..acyclic.scoring import AcyclicScorer, Firings
 from ..core import BodyChain, EdgeTypeTuple, QueryDirection
 from ..exceptions import ConfigurationError
 from ..graph import HeteroGraph
-from ..metrics import RuleMetrics
-from ..rule import Rule, RuleType
+from ..rule import RuleType
+from ..rule_evaluation import RuleSet
 from .batch import ChainSideBatch, QueryChainEvidence
 from .grounding import build_groundings
 from .records import AcyclicEvidence, ChainEvidence, PredictionConfig
@@ -63,7 +62,7 @@ class RuleEvidence:
     ----------
     graph : HeteroGraph
         The knowledge graph to ground rules against.
-    results : Sequence[tuple[Rule, RuleMetrics]]
+    results : RuleSet
         Rules paired with their evaluated metrics. All rules must predict
         the same head relation.
     config : PredictionConfig | None
@@ -79,7 +78,7 @@ class RuleEvidence:
     def __init__(
         self,
         graph: HeteroGraph,
-        results: Sequence[tuple[Rule, RuleMetrics]],
+        results: RuleSet,
         *,
         config: PredictionConfig | None = None,
     ) -> None:

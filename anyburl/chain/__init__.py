@@ -1,7 +1,7 @@
 """Chain grounding engine: count body-chain groundings without materialising.
 
-Internal machinery used by :mod:`anyburl.metrics` and the walk engine; not part
-of the public API.
+Internal machinery used by :mod:`anyburl.rule_evaluation`, prediction and the
+walk engine; not part of the public API.
 """
 
 from .paths import PathCounter

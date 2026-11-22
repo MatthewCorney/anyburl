@@ -14,7 +14,8 @@ The learning process follows four stages:
 3. **Generalize** --- :class:`RuleGeneralizer` replaces the entities in each
    path with variables, producing cyclic, AC1 and AC2 :class:`Rule` objects.
 4. **Evaluate** --- :class:`RuleEvaluator` computes support, confidence and
-   head coverage (:class:`RuleMetrics`) by counting body-chain groundings.
+   head coverage (:class:`RuleMetrics`) by counting body-chain groundings,
+   and keeps the rules passing their thresholds in a :class:`RuleSet`.
 
 Learned rules are grounded into :class:`RuleEvidence`, combined into scores by
 :class:`RulePredictor` or a learned :class:`AggregatedScorer`, and scored with
@@ -82,17 +83,7 @@ from .exceptions import (
     InvalidRuleError,
     NotFittedError,
 )
-from .factories import (
-    build_triple_sampler,
-    build_walk_engine,
-)
 from .graph import HeteroGraph
-from .metrics import (
-    RuleEvaluator,
-    RuleMetrics,
-    RuleSet,
-    aggregate_confidence,
-)
 from .pipeline import (
     AnyBURL,
     AnyBURLConfig,
@@ -113,10 +104,16 @@ from .rule import (
     Rule,
     RuleConfig,
     RuleGeneralizer,
+    RuleMetrics,
     RuleThresholds,
     RuleType,
     Term,
     TermKind,
+    aggregate_confidence,
+)
+from .rule_evaluation import (
+    RuleEvaluator,
+    RuleSet,
 )
 from .sampler import (
     BaseTripleSampler,
@@ -125,12 +122,15 @@ from .sampler import (
     SamplingStrategy,
     UniformTripleSampler,
     WeightedTripleSampler,
+    build_triple_sampler,
 )
 from .split import (
     InverseEdgeHandling,
     SplitConfig,
     TripleSplit,
+    ValidationSplit,
     split_target_edges,
+    split_with_validation,
 )
 from .stratification import (
     DegreeBucket,
@@ -139,7 +139,6 @@ from .stratification import (
     relation_degrees,
     stratify_by_degree,
 )
-from .validation_split import ValidationSplit, split_with_validation
 from .walk import (
     EdgeWeighting,
     NumbaWalkEngine,
@@ -224,7 +223,6 @@ __all__ = [
     "aggregate_confidence",
     "build_training_set",
     "build_triple_sampler",
-    "build_walk_engine",
     "concat_training_sets",
     "rank_queries_by_edge_type",
     "rank_queries_with_each",

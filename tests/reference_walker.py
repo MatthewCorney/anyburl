@@ -10,6 +10,7 @@ from anyburl.graph import HeteroGraph
 from anyburl.rule import PathStep
 from anyburl.walk import WalkConfig
 from anyburl.walk.base import EMPTY_RELATION
+from tests import adjacency
 
 
 class ReferenceWalker:
@@ -48,7 +49,7 @@ class ReferenceWalker:
             edge_type = self._select_edge_type(current_type)
             if edge_type is None:
                 return None
-            neighbors = self._graph.get_neighbors(current_id, edge_type)
+            neighbors = adjacency.neighbors(self._graph, current_id, edge_type)
             if neighbors.numel() == 0:
                 return None
             index = torch.randint(0, neighbors.numel(), (1,), generator=self._generator)

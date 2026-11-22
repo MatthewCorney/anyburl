@@ -1,6 +1,5 @@
 """Grounding body chains against the graph, one query entity at a time."""
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 from torch import Tensor
@@ -9,8 +8,8 @@ from .._logging import get_logger
 from ..chain import PathCounter
 from ..core import BodyChain
 from ..graph import HeteroGraph
-from ..metrics import RuleMetrics
 from ..rule import Rule, RuleType
+from ..rule_evaluation import RuleSet
 
 __all__ = ["ChainGrounding", "body_chain_key", "build_groundings"]
 
@@ -51,7 +50,7 @@ def body_chain_key(rule: Rule) -> BodyChain:
 
 def build_groundings(
     graph: HeteroGraph,
-    results: Sequence[tuple[Rule, RuleMetrics]],
+    results: RuleSet,
 ) -> dict[BodyChain, ChainGrounding]:
     """Build one grounding per distinct body chain, skipping AC2 rules.
 
@@ -62,7 +61,7 @@ def build_groundings(
     ----------
     graph : HeteroGraph
         The knowledge graph.
-    results : Sequence[tuple[Rule, RuleMetrics]]
+    results : RuleSet
         Rules with their metrics.
 
     Returns

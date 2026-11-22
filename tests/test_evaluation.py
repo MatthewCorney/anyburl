@@ -16,6 +16,7 @@ from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.prediction import RulePredictor
 from anyburl.rule import Rule
+from anyburl.rule_evaluation import RuleSet
 from tests.rules import metrics_with
 
 
@@ -24,7 +25,7 @@ def test_perfect_mrr(
     cyclic_rule: Rule,
 ) -> None:
     """With a perfect rule, all triples should rank 1 -> MRR = 1.0."""
-    results = [(cyclic_rule, metrics_with(confidence=0.9))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.9))])
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3, 10), filter_known=True)
@@ -53,7 +54,7 @@ def test_perfect_hits_at_k(
     cyclic_rule: Rule,
 ) -> None:
     """Perfect prediction should give Hits@K = 1.0 for all K."""
-    results = [(cyclic_rule, metrics_with(confidence=0.9))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.9))])
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3), filter_known=True)
@@ -87,7 +88,7 @@ def test_filtered_excludes_known_triples(
     cyclic_rule: Rule,
 ) -> None:
     """Filtered setting should not count known triples as competitors."""
-    results = [(cyclic_rule, metrics_with(confidence=0.9))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.9))])
     predictor = RulePredictor(perfect_eval_graph, results)
 
     filtered_config = EvaluationConfig(k_values=(1,), filter_known=True)
@@ -145,7 +146,7 @@ def test_averaged_metrics(
     cyclic_rule: Rule,
 ) -> None:
     """Metrics should be averaged across all queries."""
-    results = [(cyclic_rule, metrics_with(confidence=0.9))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.9))])
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3), filter_known=True)
@@ -186,7 +187,7 @@ def test_empty_triples_returns_zeros(
     cyclic_rule: Rule,
 ) -> None:
     """Empty test set should return zero metrics."""
-    results = [(cyclic_rule, metrics_with(confidence=0.9))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.9))])
     predictor = RulePredictor(perfect_eval_graph, results)
 
     config = EvaluationConfig(k_values=(1, 3, 10), filter_known=True)
@@ -293,7 +294,8 @@ class TestRankQueriesWithEach:
         self, perfect_eval_graph: HeteroGraph, cyclic_rule: Rule
     ) -> None:
         predictor = RulePredictor(
-            perfect_eval_graph, [(cyclic_rule, metrics_with(confidence=0.9))]
+            perfect_eval_graph,
+            RuleSet.of([(cyclic_rule, metrics_with(confidence=0.9))]),
         )
         scorers = {"rules": predictor, "negative": _NegativeScorer()}
         triples = [_lives_in(2, 0), _lives_in(0, 1), _lives_in(1, 2), _lives_in(0, 2)]

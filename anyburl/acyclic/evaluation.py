@@ -8,8 +8,9 @@ from numpy.typing import NDArray
 
 from ..core import EdgeTypeTuple
 from ..graph import HeteroGraph
+from ..rule import RuleMetrics
 from ..rule.model import Atom, Rule, TermKind
-from ..rule.quality import RuleMetrics, metrics_from_counts
+from ..rule.quality import metrics_from_counts
 
 __all__ = ["AcyclicIndex", "acyclic_constant", "evaluate_acyclic"]
 

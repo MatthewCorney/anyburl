@@ -6,9 +6,8 @@ from torch_geometric.data import HeteroData
 
 from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError
-from anyburl.factories import build_walk_engine
 from anyburl.graph import HeteroGraph
-from anyburl.walk import EdgeWeighting, WalkConfig
+from anyburl.walk import EdgeWeighting, NumbaWalkEngine, WalkConfig
 
 
 @pytest.fixture
@@ -46,7 +45,7 @@ def test_walk_config_invalid_params(
 
 def test_walk_finds_path_on_linear_graph(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=2, max_attempts=50, seed=42)
-    engine = build_walk_engine(linear_graph, config)
+    engine = NumbaWalkEngine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -63,7 +62,7 @@ def test_walk_finds_path_on_linear_graph(linear_graph: HeteroGraph) -> None:
 
 def test_walk_respects_min_length(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=3, max_length=5, max_attempts=50, seed=42)
-    engine = build_walk_engine(linear_graph, config)
+    engine = NumbaWalkEngine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -74,7 +73,7 @@ def test_walk_respects_min_length(linear_graph: HeteroGraph) -> None:
 
 def test_walk_deduplicates_paths(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=2, max_attempts=100, seed=42)
-    engine = build_walk_engine(linear_graph, config)
+    engine = NumbaWalkEngine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -89,7 +88,7 @@ def test_walk_returns_empty_on_dead_end() -> None:
     data["X", "rel", "X"].edge_index = torch.tensor([[0], [1]], dtype=torch.long)
     graph = HeteroGraph(data)
     config = WalkConfig(min_length=2, max_length=3, max_attempts=10, seed=42)
-    engine = build_walk_engine(graph, config)
+    engine = NumbaWalkEngine(graph, config)
     triple = Triple(head_id=0, tail_id=0, head_type="X", tail_type="X", relation="self")
 
     paths = engine.walk_from_triple(triple)
@@ -98,7 +97,7 @@ def test_walk_returns_empty_on_dead_end() -> None:
 
 def test_pathstep_format_compatible_with_generalizer(linear_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=2, max_attempts=50, seed=42)
-    engine = build_walk_engine(linear_graph, config)
+    engine = NumbaWalkEngine(linear_graph, config)
     triple = Triple(
         head_id=0, tail_id=1, head_type="A", tail_type="A", relation="target"
     )
@@ -118,7 +117,7 @@ def test_pathstep_format_compatible_with_generalizer(linear_graph: HeteroGraph) 
 
 def test_walk_on_heterogeneous_graph(simple_graph: HeteroGraph) -> None:
     config = WalkConfig(min_length=2, max_length=5, max_attempts=200, seed=42)
-    engine = build_walk_engine(simple_graph, config)
+    engine = NumbaWalkEngine(simple_graph, config)
 
     triple = Triple(
         head_id=0,
@@ -137,7 +136,7 @@ def test_walk_on_heterogeneous_graph(simple_graph: HeteroGraph) -> None:
         assert path[-1][2] == ""
 
 
-def test_build_walk_engine_inverse_frequency(simple_graph: HeteroGraph) -> None:
+def test_inverse_frequency_weighting_finds_paths(simple_graph: HeteroGraph) -> None:
     config = WalkConfig(
         min_length=2,
         max_length=3,
@@ -145,7 +144,7 @@ def test_build_walk_engine_inverse_frequency(simple_graph: HeteroGraph) -> None:
         edge_weighting=EdgeWeighting.INVERSE_FREQUENCY,
         seed=42,
     )
-    engine = build_walk_engine(simple_graph, config)
+    engine = NumbaWalkEngine(simple_graph, config)
     triple = Triple(
         head_id=0,
         tail_id=2,

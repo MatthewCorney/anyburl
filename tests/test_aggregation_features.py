@@ -9,9 +9,9 @@ from anyburl.aggregation import CandidateFeature, CandidateFeaturizer, build_fea
 from anyburl.aggregation.features import LOG_SCORE_FLOOR
 from anyburl.core import QueryDirection
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleMetrics
 from anyburl.prediction import ChainEvidence, RulePredictor
-from anyburl.rule import Rule
+from anyburl.rule import Rule, RuleMetrics
+from anyburl.rule_evaluation import RuleSet
 from anyburl.stratification import relation_degrees
 from tests.rules import subject_grounded
 
@@ -90,10 +90,12 @@ class TestCandidateFeaturizer:
     def predictor(
         self, evaluator_graph: HeteroGraph, cyclic_rule: Rule
     ) -> RulePredictor:
-        results = [
-            (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
-            (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
-        ]
+        results = RuleSet.of(
+            [
+                (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
+                (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+            ]
+        )
         return RulePredictor(evaluator_graph, results)
 
     @pytest.fixture

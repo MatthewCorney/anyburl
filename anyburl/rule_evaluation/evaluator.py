@@ -13,9 +13,18 @@ from ..chain import ChainScanner
 from ..core import BodyChain, EdgeTypeTuple
 from ..exceptions import GraphSchemaError
 from ..graph import HeteroGraph
-from ..rule import Atom, Rule, RuleConfig, RuleType, TermKind
-from ..rule.quality import NO_PREDICTIONS, RuleMetrics, metrics_from_counts
+from ..rule import (
+    NO_PREDICTIONS,
+    Atom,
+    Rule,
+    RuleConfig,
+    RuleMetrics,
+    RuleType,
+    TermKind,
+)
+from ..rule.quality import metrics_from_counts
 from .coverage_warning import HeadCoverageWarning
+from .rule_set import RuleSet
 
 __all__ = ["RuleEvaluator"]
 
@@ -75,7 +84,7 @@ class RuleEvaluator:
         rules: Sequence[Rule],
         *,
         max_results: int | None = None,
-    ) -> list[tuple[Rule, RuleMetrics]]:
+    ) -> RuleSet:
         """Evaluate multiple rules, returning those that pass thresholds.
 
         Parameters
@@ -88,7 +97,7 @@ class RuleEvaluator:
 
         Returns
         -------
-        list[tuple[Rule, RuleMetrics]]
+        RuleSet
             Passing rules paired with their metrics, in input order.
         """
         metrics_by_rule = self._compute_all_metrics(rules)
@@ -103,7 +112,7 @@ class RuleEvaluator:
             "Evaluated %d rules, %d passed thresholds", len(rules), len(results)
         )
         self._coverage_warning.check(rules, metrics_by_rule)
-        return results
+        return RuleSet.of(results)
 
     def _passes(self, rule: Rule, metrics: RuleMetrics) -> bool:
         """Return whether ``metrics`` clear the floors for ``rule``'s type."""

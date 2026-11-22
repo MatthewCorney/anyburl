@@ -4,8 +4,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from ..core import EdgeTypeTuple
-from ..rule import Rule
-from ..rule.quality import RuleMetrics
+from ..rule import Rule, RuleMetrics
 
 __all__ = ["RuleSet"]
 
@@ -50,9 +49,7 @@ class RuleSet:
         """Return the relations the rules predict, in order of first appearance."""
         return tuple(dict.fromkeys(rule.head.edge_signature for rule, _ in self))
 
-    def for_edge_type(
-        self, edge_type: EdgeTypeTuple
-    ) -> tuple[tuple[Rule, RuleMetrics], ...]:
+    def for_edge_type(self, edge_type: EdgeTypeTuple) -> "RuleSet":
         """Return the rules predicting ``edge_type``, in learned order.
 
         Parameters
@@ -62,10 +59,10 @@ class RuleSet:
 
         Returns
         -------
-        tuple[tuple[Rule, RuleMetrics], ...]
+        RuleSet
             Its rules; empty when none were learned.
         """
-        return tuple(
+        return RuleSet.of(
             (rule, metrics)
             for rule, metrics in self
             if rule.head.edge_signature == edge_type

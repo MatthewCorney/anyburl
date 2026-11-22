@@ -9,7 +9,6 @@ from torch_geometric.data import HeteroData
 from anyburl.core import QueryDirection
 from anyburl.exceptions import ConfigurationError, GraphSchemaError, NotFittedError
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleMetrics
 from anyburl.pipeline import AnyBURL, AnyBURLConfig
 from anyburl.prediction import (
     ConfidenceAggregation,
@@ -22,8 +21,10 @@ from anyburl.prediction import (
 )
 from anyburl.prediction.grounding import body_chain_key, build_groundings
 from anyburl.prediction.scoring import GROUNDING_WEIGHT_OFFSET, TIE_BREAK_WEIGHT
-from anyburl.rule import Atom, Rule, RuleType, Term
+from anyburl.rule import Atom, Rule, RuleMetrics, RuleType, Term
 from anyburl.rule.quality import corrected_confidence
+from anyburl.rule_evaluation import RuleSet
+from tests import adjacency
 from tests.rules import (
     ac2_born_in,
     cyclic_born_in_near,
@@ -51,7 +52,7 @@ def test_cyclic_predictions_contain_expected_pairs(
     cyclic_rule: Rule,
 ) -> None:
     """born_in @ near produces exactly {(0,1),(1,2),(2,1),(3,0)}."""
-    results = [(cyclic_rule, metrics_with(confidence=0.25))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.25))])
     predictor = RulePredictor(evaluator_graph, results)
 
     predictions = predictor.predict()
@@ -64,7 +65,7 @@ def test_predictions_sorted_by_score(
     evaluator_graph: HeteroGraph,
     cyclic_rule: Rule,
 ) -> None:
-    results = [(cyclic_rule, metrics_with(confidence=0.25))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.25))])
     predictor = RulePredictor(evaluator_graph, results)
 
     predictions = predictor.predict()
@@ -76,7 +77,7 @@ def test_predictions_sorted_by_score(
 def test_subject_grounded_predictions(evaluator_graph: HeteroGraph) -> None:
     """Subject-grounded AC1 rule for person:0 predicts via born_in @ near."""
     rule = subject_grounded(0)
-    results = [(rule, metrics_with(confidence=0.5))]
+    results = RuleSet.of([(rule, metrics_with(confidence=0.5))])
     predictor = RulePredictor(evaluator_graph, results)
 
     predictions = predictor.predict()
@@ -88,7 +89,7 @@ def test_subject_grounded_predictions(evaluator_graph: HeteroGraph) -> None:
 def test_object_grounded_predictions(evaluator_graph: HeteroGraph) -> None:
     """Object-grounded AC1 rule for city:0 predicts via born_in @ near."""
     rule = object_grounded(0)
-    results = [(rule, metrics_with(confidence=0.5))]
+    results = RuleSet.of([(rule, metrics_with(confidence=0.5))])
     predictor = RulePredictor(evaluator_graph, results)
 
     predictions = predictor.predict()
@@ -104,10 +105,12 @@ def test_two_rules_same_pair_noisy_or(
     """Two rules both predicting (3,0) with conf 0.25 and 0.5."""
     obj_grounded_rule = object_grounded(0)
 
-    results: list[tuple[Rule, RuleMetrics]] = [
-        (cyclic_rule, metrics_with(confidence=0.25)),
-        (obj_grounded_rule, metrics_with(confidence=0.5)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_rule, metrics_with(confidence=0.25)),
+            (obj_grounded_rule, metrics_with(confidence=0.5)),
+        ]
+    )
 
     predictor = RulePredictor(evaluator_graph, results)
     predictions = predictor.predict()
@@ -118,7 +121,7 @@ def test_two_rules_same_pair_noisy_or(
 
 def test_known_edge_removed(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> None:
     """(3,0) is a known lives_in edge -> removed when filter_known=True."""
-    results = [(cyclic_rule, metrics_with(confidence=0.25))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.25))])
     predictor = RulePredictor(evaluator_graph, results)
 
     predictions = predictor.predict(filter_known=True)
@@ -132,7 +135,7 @@ def test_known_edge_kept_without_filter(
     cyclic_rule: Rule,
 ) -> None:
     """(3,0) is kept when filter_known=False."""
-    results = [(cyclic_rule, metrics_with(confidence=0.25))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.25))])
     predictor = RulePredictor(evaluator_graph, results)
 
     predictions = predictor.predict(filter_known=False)
@@ -143,7 +146,7 @@ def test_known_edge_kept_without_filter(
 
 def test_score_tails_cyclic(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> None:
     """score_tails for person 0 should score city 1."""
-    results = [(cyclic_rule, metrics_with(confidence=0.5))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.5))])
     predictor = RulePredictor(evaluator_graph, results)
 
     scores = predictor.score_tails(0)
@@ -156,10 +159,12 @@ def test_score_tails_cyclic(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> 
 
 def test_score_tails_with_ac1(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> None:
     """Subject-grounded AC1 for person 0 also contributes to score_tails(0)."""
-    results = [
-        (cyclic_rule, metrics_with(confidence=0.25)),
-        (subject_grounded(0), metrics_with(confidence=0.5)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_rule, metrics_with(confidence=0.25)),
+            (subject_grounded(0), metrics_with(confidence=0.5)),
+        ]
+    )
     predictor = RulePredictor(evaluator_graph, results)
 
     scores = predictor.score_tails(0)
@@ -169,7 +174,7 @@ def test_score_tails_with_ac1(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -
 
 def test_score_heads_cyclic(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> None:
     """score_heads for city 0 should score person 3."""
-    results = [(cyclic_rule, metrics_with(confidence=0.5))]
+    results = RuleSet.of([(cyclic_rule, metrics_with(confidence=0.5))])
     predictor = RulePredictor(evaluator_graph, results)
 
     scores = predictor.score_heads(0)
@@ -180,7 +185,7 @@ def test_score_heads_cyclic(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> 
 
 def test_empty_results_raises(evaluator_graph: HeteroGraph) -> None:
     with pytest.raises(ConfigurationError, match="results must not be empty"):
-        RulePredictor(evaluator_graph, [])
+        RulePredictor(evaluator_graph, RuleSet.of([]))
 
 
 def test_ac2_rules_are_skipped(
@@ -189,15 +194,17 @@ def test_ac2_rules_are_skipped(
 ) -> None:
     """AC2 rules are included in results but produce no predictions."""
     ac2 = ac2_born_in()
-    results = [
-        (cyclic_rule, metrics_with(confidence=0.25)),
-        (ac2, metrics_with(confidence=0.1)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_rule, metrics_with(confidence=0.25)),
+            (ac2, metrics_with(confidence=0.1)),
+        ]
+    )
     predictor = RulePredictor(evaluator_graph, results)
     predictions = predictor.predict()
 
     cyclic_only = RulePredictor(
-        evaluator_graph, [(cyclic_rule, metrics_with(confidence=0.25))]
+        evaluator_graph, RuleSet.of([(cyclic_rule, metrics_with(confidence=0.25))])
     )
     expected = cyclic_only.predict()
 
@@ -226,7 +233,7 @@ def multi_grounding_graph() -> HeteroGraph:
 
 def test_noisy_or_ignores_grounding_count(multi_grounding_graph: HeteroGraph) -> None:
     """Under ONCE weighting a candidate is only reachable or not."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(
         multi_grounding_graph,
         results,
@@ -242,7 +249,7 @@ def test_path_weighted_ranks_more_groundings_higher(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """Two body groundings must outrank one."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(
         multi_grounding_graph,
         results,
@@ -258,7 +265,7 @@ def test_path_weighted_matches_noisy_or_for_single_grounding(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """log2(1 + 1) == 1, so one grounding weighs exactly one firing."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     weighted = RulePredictor(
         multi_grounding_graph,
         results,
@@ -277,7 +284,7 @@ def test_score_heads_is_path_weighted_too(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """The reverse direction must weight groundings the same way."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(
         multi_grounding_graph,
         results,
@@ -294,9 +301,9 @@ def test_score_heads_is_path_weighted_too(
 
 def _product(graph: HeteroGraph, chain: tuple) -> torch.Tensor:
     """Return the dense product of a chain's adjacency matrices."""
-    product = graph.get_csr_matrix(chain[0]).to_dense()
+    product = adjacency.adjacency_matrix(graph, chain[0]).to_dense()
     for edge_type in chain[1:]:
-        product = product @ graph.get_csr_matrix(edge_type).to_dense()
+        product = product @ adjacency.adjacency_matrix(graph, edge_type).to_dense()
     return product
 
 
@@ -316,7 +323,7 @@ def test_grounding_matches_the_chain_product(
     """Each row and column is the chain product's, path counts included."""
     chain = body_chain_key(rule)
     grounding = build_groundings(
-        multi_grounding_graph, [(rule, RuleMetrics(2, 0.5, 0.5, 4))]
+        multi_grounding_graph, RuleSet.of([(rule, RuleMetrics(2, 0.5, 0.5, 4))])
     )[chain]
     product = _product(multi_grounding_graph, chain)
 
@@ -333,7 +340,7 @@ def test_grounding_preserves_path_counts(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """Path multiplicity must survive grounding, not just reachability."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
 
     scores = RulePredictor(multi_grounding_graph, results).score_tails(0)
 
@@ -352,14 +359,16 @@ def test_grounding_rejects_an_edge_type_missing_from_the_graph(
     )
 
     with pytest.raises(GraphSchemaError):
-        RulePredictor(evaluator_graph, [(rule, RuleMetrics(1, 0.5, 0.5, 2))])
+        RulePredictor(
+            evaluator_graph, RuleSet.of([(rule, RuleMetrics(1, 0.5, 0.5, 2))])
+        )
 
 
 def test_explain_names_the_firing_chain(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """A score with no provenance cannot be checked; explain must name the body."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     firings = predictor.explain(0, 2)
@@ -377,7 +386,7 @@ def test_explain_reports_grounding_counts(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """City 2 is reached by two body groundings, city 3 by one."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     assert predictor.explain(0, 2)[0].groundings == 2
@@ -387,7 +396,7 @@ def test_explain_reports_grounding_counts(
 def test_explain_returns_nothing_for_unreached_pairs(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     assert predictor.explain(0, 0) == ()
@@ -397,7 +406,7 @@ def test_explanation_contributions_sum_to_the_score(
     evaluator_graph: HeteroGraph, cyclic_rule: Rule
 ) -> None:
     """Independent firings must compose by noisy-or into the reported score."""
-    results = [(cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3))]
+    results = RuleSet.of([(cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3))])
     predictor = RulePredictor(evaluator_graph, results)
 
     scores = predictor.score_tails(0)
@@ -412,7 +421,7 @@ def test_explanation_contributions_sum_to_the_score(
 def test_top_tails_is_sorted_and_carries_explanations(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     predictions = predictor.top_tails(0, limit=5)
@@ -425,7 +434,7 @@ def test_top_tails_is_sorted_and_carries_explanations(
 
 
 def test_top_tails_respects_the_limit(multi_grounding_graph: HeteroGraph) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     assert len(predictor.top_tails(0, limit=1)) == 1
@@ -434,7 +443,7 @@ def test_top_tails_respects_the_limit(multi_grounding_graph: HeteroGraph) -> Non
 def test_top_tails_rejects_a_non_positive_limit(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     with pytest.raises(ConfigurationError, match="limit must be positive"):
@@ -445,7 +454,7 @@ def test_predict_leaves_explanations_empty(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """Attaching provenance to every pair would dwarf the scores."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     assert all(p.explanations == () for p in predictor.predict())
@@ -454,7 +463,7 @@ def test_predict_leaves_explanations_empty(
 def test_rule_firing_describe_is_readable(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     described = predictor.explain(0, 2)[0].describe()
@@ -483,11 +492,13 @@ def test_chain_evidence_composes_into_the_score(
     grounding_weighting: GroundingWeighting,
 ) -> None:
     """Per-chain contributions must noisy-or back into the predictor's score."""
-    results = [
-        (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
-        (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
-        (object_grounded(1), RuleMetrics(1, 0.6, 0.33, 3)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
+            (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+            (object_grounded(1), RuleMetrics(1, 0.6, 0.33, 3)),
+        ]
+    )
     predictor = RulePredictor(
         evaluator_graph,
         results,
@@ -508,11 +519,13 @@ def test_maximum_scores_strongest_chain_with_noisy_or_tie_break(
     evaluator_graph: HeteroGraph, cyclic_rule: Rule
 ) -> None:
     """MAXIMUM is the best chain's contribution plus a scaled noisy-or."""
-    results = [
-        (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
-        (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
-        (object_grounded(1), RuleMetrics(1, 0.6, 0.33, 3)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
+            (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+            (object_grounded(1), RuleMetrics(1, 0.6, 0.33, 3)),
+        ]
+    )
     predictor = RulePredictor(
         evaluator_graph,
         results,
@@ -560,11 +573,13 @@ def test_maximum_keeps_one_strong_chain_above_many_weak_ones(
         ),
         rule_type=RuleType.CYCLIC,
     )
-    results = [
-        (cyclic_born_in_near(), metrics_with(confidence=0.4)),
-        (object_grounded(1), metrics_with(confidence=0.4)),
-        (works_in, metrics_with(confidence=0.6)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_born_in_near(), metrics_with(confidence=0.4)),
+            (object_grounded(1), metrics_with(confidence=0.4)),
+            (works_in, metrics_with(confidence=0.6)),
+        ]
+    )
     noisy_or = RulePredictor(
         two_chain_graph,
         results,
@@ -586,10 +601,12 @@ def test_maximum_keeps_one_strong_chain_above_many_weak_ones(
 def test_chain_evidence_rows_follow_chains(
     evaluator_graph: HeteroGraph, cyclic_rule: Rule
 ) -> None:
-    results = [
-        (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
-        (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_rule, RuleMetrics(1, 0.5, 0.33, 3)),
+            (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+        ]
+    )
     predictor = RulePredictor(evaluator_graph, results)
 
     evidence = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0)
@@ -605,7 +622,7 @@ def test_chain_evidence_reports_grounding_counts(
     multi_grounding_graph: HeteroGraph,
 ) -> None:
     """City 2 is reached by two body groundings, city 3 by one, city 0 by none."""
-    results = [(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))]
+    results = RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
     predictor = RulePredictor(multi_grounding_graph, results)
 
     groundings = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0).groundings[0]
@@ -619,7 +636,9 @@ def test_chain_evidence_is_empty_without_scoring_rules(
     evaluator_graph: HeteroGraph,
 ) -> None:
     """AC2 rules are ignored, which can leave no chains at all."""
-    predictor = RulePredictor(evaluator_graph, [(ac2_born_in(), metrics_with(0.5))])
+    predictor = RulePredictor(
+        evaluator_graph, RuleSet.of([(ac2_born_in(), metrics_with(0.5))])
+    )
 
     evidence = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0)
 
@@ -661,10 +680,12 @@ def test_unseen_negatives_reorder_candidates(two_chain_graph: HeteroGraph) -> No
         ),
         rule_type=RuleType.CYCLIC,
     )
-    results = [
-        (cyclic_born_in_near(), RuleMetrics(2, 1.0, 0.1, 2)),
-        (works_in, RuleMetrics(90, 0.9, 0.1, 100)),
-    ]
+    results = RuleSet.of(
+        [
+            (cyclic_born_in_near(), RuleMetrics(2, 1.0, 0.1, 2)),
+            (works_in, RuleMetrics(90, 0.9, 0.1, 100)),
+        ]
+    )
 
     def tail_scores(unseen_negatives: int) -> torch.Tensor:
         config = PredictionConfig(
@@ -684,12 +705,14 @@ _NUM_CITIES = 3
 """Query ids valid in both directions of ``evaluator_graph``."""
 
 
-def _memo_results() -> list[tuple[Rule, RuleMetrics]]:
+def _memo_results() -> RuleSet:
     """A cyclic rule and a subject-grounded AC1 rule over the same chain."""
-    return [
-        (cyclic_born_in_near(), metrics_with(confidence=0.25)),
-        (subject_grounded(0), metrics_with(confidence=0.5)),
-    ]
+    return RuleSet.of(
+        [
+            (cyclic_born_in_near(), metrics_with(confidence=0.25)),
+            (subject_grounded(0), metrics_with(confidence=0.5)),
+        ]
+    )
 
 
 class TestRuleEvidenceMemo:
@@ -742,12 +765,14 @@ class TestRuleEvidenceMemo:
 _NUM_QUERIES = {QueryDirection.TAIL: 4, QueryDirection.HEAD: _NUM_CITIES}
 
 
-def _batch_results() -> list[tuple[Rule, RuleMetrics]]:
-    return [
-        (cyclic_born_in_near(), metrics_with(confidence=0.25)),
-        (subject_grounded(0), metrics_with(confidence=0.5)),
-        (object_grounded(1), metrics_with(confidence=0.4)),
-    ]
+def _batch_results() -> RuleSet:
+    return RuleSet.of(
+        [
+            (cyclic_born_in_near(), metrics_with(confidence=0.25)),
+            (subject_grounded(0), metrics_with(confidence=0.5)),
+            (object_grounded(1), metrics_with(confidence=0.4)),
+        ]
+    )
 
 
 def _per_chain_contributions(

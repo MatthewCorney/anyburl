@@ -12,9 +12,9 @@ from anyburl.aggregation import (
 from anyburl.core import QueryDirection
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleMetrics
 from anyburl.prediction import GroundingWeighting, PredictionConfig, RulePredictor
-from anyburl.rule import Rule
+from anyburl.rule import Rule, RuleMetrics
+from anyburl.rule_evaluation import RuleSet
 from anyburl.stratification import relation_degrees
 from tests.rules import object_constant_rule
 
@@ -31,10 +31,12 @@ class TestAcyclicEvidence:
     def test_summarises_rules_firing_per_candidate(
         self, evaluator_graph: HeteroGraph
     ) -> None:
-        results = [
-            (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
-            (object_constant_rule(0, None), RuleMetrics(2, 0.5, 0.5, 4)),
-        ]
+        results = RuleSet.of(
+            [
+                (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
+                (object_constant_rule(0, None), RuleMetrics(2, 0.5, 0.5, 4)),
+            ]
+        )
         predictor = RulePredictor(evaluator_graph, results)
 
         evidence = predictor.evidence.acyclic_evidence(QueryDirection.TAIL, 2)
@@ -47,7 +49,7 @@ class TestAcyclicEvidence:
         self, evaluator_graph: HeteroGraph, cyclic_rule: Rule
     ) -> None:
         predictor = RulePredictor(
-            evaluator_graph, [(cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4))]
+            evaluator_graph, RuleSet.of([(cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4))])
         )
 
         evidence = predictor.evidence.acyclic_evidence(QueryDirection.HEAD, 0)
@@ -59,10 +61,12 @@ class TestSharedFeaturizer:
     @pytest.fixture
     def features(self, evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> torch.Tensor:
         """Features of person 2's tails: cyclic reaches city 1, acyclic city 0."""
-        results = [
-            (cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4)),
-            (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
-        ]
+        results = RuleSet.of(
+            [
+                (cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4)),
+                (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
+            ]
+        )
         predictor = RulePredictor(evaluator_graph, results, config=PLAIN)
         featurizer = SharedFeaturizer(
             predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
@@ -100,7 +104,7 @@ class TestSharedFeaturizer:
         self, evaluator_graph: HeteroGraph, cyclic_rule: Rule
     ) -> None:
         predictor = RulePredictor(
-            evaluator_graph, [(cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4))]
+            evaluator_graph, RuleSet.of([(cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4))])
         )
         featurizer = SharedFeaturizer(
             predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)
@@ -156,10 +160,12 @@ class TestRestrictedSharedFeatures:
     def featurizer(
         self, evaluator_graph: HeteroGraph, cyclic_rule: Rule
     ) -> SharedFeaturizer:
-        results = [
-            (cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4)),
-            (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
-        ]
+        results = RuleSet.of(
+            [
+                (cyclic_rule, RuleMetrics(1, 0.25, 0.25, 4)),
+                (object_constant_rule(0, 0), RuleMetrics(1, 0.5, 0.25, 2)),
+            ]
+        )
         predictor = RulePredictor(evaluator_graph, results, config=PLAIN)
         return SharedFeaturizer(
             predictor.evidence, relation_degrees(evaluator_graph, LIVES_IN)

@@ -1,7 +1,7 @@
 """Per-direction views of the evidence each body chain contributes."""
 
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import assert_never
 
@@ -9,9 +9,9 @@ import torch
 from torch import Tensor
 
 from ..core import BodyChain
-from ..metrics import RuleMetrics, aggregate_confidence
-from ..rule import Rule, RuleType, TermKind
+from ..rule import RuleType, TermKind, aggregate_confidence
 from ..rule.quality import corrected_confidence
+from ..rule_evaluation import RuleSet
 from .grounding import ChainGrounding, body_chain_key
 
 __all__ = [
@@ -114,7 +114,7 @@ class _ChainConfidences:
 
 
 def build_chain_sides(
-    results: Sequence[tuple[Rule, RuleMetrics]],
+    results: RuleSet,
     groundings: Mapping[BodyChain, ChainGrounding],
     unseen_negatives: int,
 ) -> tuple[list[ChainSide], list[ChainSide]]:
@@ -122,7 +122,7 @@ def build_chain_sides(
 
     Parameters
     ----------
-    results : Sequence[tuple[Rule, RuleMetrics]]
+    results : RuleSet
         Rules with their metrics. AC2 and acyclic rules are ignored.
     groundings : Mapping[BodyChain, ChainGrounding]
         Grounding per body chain.
@@ -173,9 +173,7 @@ def build_chain_sides(
     return tail_sides, head_sides
 
 
-def _collect_confidences(
-    results: Sequence[tuple[Rule, RuleMetrics]], unseen_negatives: int
-) -> _ChainConfidences:
+def _collect_confidences(results: RuleSet, unseen_negatives: int) -> _ChainConfidences:
     """Collect cyclic and AC1 rule confidences per body chain."""
     collected = _ChainConfidences()
     for rule, metrics in results:

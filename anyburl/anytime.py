@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from ._logging import get_logger
 from .core import Triple
 from .exceptions import ConfigurationError
-from .metrics import RuleEvaluator, RuleMetrics
-from .rule import PathStep, Rule, RuleGeneralizer
+from .rule import PathStep, Rule, RuleGeneralizer, RuleMetrics
+from .rule_evaluation import RuleEvaluator, RuleSet
 from .walk import PathWalker
 
 logger = get_logger(__name__)
@@ -208,12 +208,12 @@ class AnytimeLearner:
         """Return every distinct rule generalized so far, in first-seen order."""
         return tuple(self._seen)
 
-    def learn(self) -> tuple[list[tuple[Rule, RuleMetrics]], AnytimeReport]:
+    def learn(self) -> tuple[RuleSet, AnytimeReport]:
         """Run the mining loop within the configured budget.
 
         Returns
         -------
-        tuple[list[tuple[Rule, RuleMetrics]], AnytimeReport]
+        tuple[RuleSet, AnytimeReport]
             Rules that passed thresholds, paired with their metrics, and
             a record of how the budget was spent.
         """
@@ -237,7 +237,7 @@ class AnytimeLearner:
             lengths=tuple(reports), seconds=elapsed, completed=completed
         )
         logger.info("Anytime mining: %s", anytime_report.describe())
-        return results, anytime_report
+        return RuleSet.of(results), anytime_report
 
     def _mine_length(
         self,

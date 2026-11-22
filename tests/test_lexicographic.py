@@ -6,6 +6,7 @@ import torch
 from anyburl.graph import HeteroGraph
 from anyburl.prediction import ConfidenceAggregation, PredictionConfig, RulePredictor
 from anyburl.prediction.lexicographic import lexicographic_scores
+from anyburl.rule_evaluation import RuleSet
 from tests.rules import cyclic_born_in_near, metrics_with, subject_grounded
 
 NUM_CANDIDATES = 5
@@ -71,10 +72,12 @@ class TestLexicographicAggregation:
     def test_scores_match_the_strongest_rule(
         self, evaluator_graph: HeteroGraph
     ) -> None:
-        results = [
-            (cyclic_born_in_near(), metrics_with(confidence=0.25)),
-            (subject_grounded(0), metrics_with(confidence=0.5)),
-        ]
+        results = RuleSet.of(
+            [
+                (cyclic_born_in_near(), metrics_with(confidence=0.25)),
+                (subject_grounded(0), metrics_with(confidence=0.5)),
+            ]
+        )
         lexicographic = RulePredictor(
             evaluator_graph,
             results,

@@ -9,8 +9,9 @@ import torch
 from torch import Tensor
 
 from ..core import EdgeTypeTuple
-from ..rule.model import Atom, Rule, RuleType
-from ..rule.quality import RuleMetrics, corrected_confidence
+from ..rule.model import Atom, RuleType
+from ..rule.quality import corrected_confidence
+from ..rule_evaluation import RuleSet
 from .evaluation import AcyclicIndex, acyclic_constant
 
 __all__ = ["AcyclicScorer", "Firings"]
@@ -117,7 +118,7 @@ class AcyclicScorer:
     ----------
     index : AcyclicIndex
         Body lookups over the graph being predicted on.
-    results : Sequence[tuple[Rule, RuleMetrics]]
+    results : RuleSet
         Rules with their metrics; rules of other types are ignored.
     unseen_negatives : int
         Assumed incorrect predictions added to each rule's denominator.
@@ -126,7 +127,7 @@ class AcyclicScorer:
     def __init__(
         self,
         index: AcyclicIndex,
-        results: Sequence[tuple[Rule, RuleMetrics]],
+        results: RuleSet,
         unseen_negatives: int,
     ) -> None:
         self._index = index

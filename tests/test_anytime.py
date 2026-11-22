@@ -12,8 +12,8 @@ from anyburl.anytime import (
 from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleEvaluator
 from anyburl.rule import PathStep, RuleConfig, RuleGeneralizer
+from anyburl.rule_evaluation import RuleEvaluator
 from anyburl.walk import PathWalker
 
 TARGET = Triple(

@@ -7,7 +7,6 @@ import torch
 
 from anyburl.core import Triple
 from anyburl.exceptions import ConfigurationError, GraphSchemaError
-from anyburl.factories import build_triple_sampler
 from anyburl.graph import HeteroGraph
 from anyburl.sampler import (
     EntityBalancedTripleSampler,
@@ -15,6 +14,7 @@ from anyburl.sampler import (
     SamplingStrategy,
     UniformTripleSampler,
     WeightedTripleSampler,
+    build_triple_sampler,
 )
 
 NEAR_EDGES = 3

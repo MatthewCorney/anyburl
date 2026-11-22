@@ -67,8 +67,10 @@ class TestRuleSet:
         assert rule_set.head_edge_types() == (LIVES_IN, NEAR)
 
     def test_for_edge_type_selects_one_relation(self, rule_set: RuleSet) -> None:
-        assert rule_set.for_edge_type(NEAR) == ((NEAR_RULE, metrics_with(0.4)),)
-        assert rule_set.for_edge_type(KNOWS) == ()
+        assert rule_set.for_edge_type(NEAR) == RuleSet.of(
+            [(NEAR_RULE, metrics_with(0.4))]
+        )
+        assert rule_set.for_edge_type(KNOWS) == RuleSet.of(())
 
 
 class TestZeroScorer:

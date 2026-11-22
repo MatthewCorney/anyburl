@@ -65,43 +65,9 @@ def test_total_edge_count(simple_graph: HeteroGraph) -> None:
     assert simple_graph.total_edge_count() == 14
 
 
-def test_get_neighbors_lives_in(simple_graph: HeteroGraph) -> None:
-    neighbors = simple_graph.get_neighbors(0, ("person", "lives_in", "city"))
-    assert sorted(neighbors.tolist()) == [0, 1]
-
-
-def test_get_neighbors_knows(simple_graph: HeteroGraph) -> None:
-    neighbors = simple_graph.get_neighbors(0, ("person", "knows", "person"))
-    assert neighbors.tolist() == [1]
-
-
-def test_get_neighbors_no_outgoing(simple_graph: HeteroGraph) -> None:
-    neighbors = simple_graph.get_neighbors(1, ("person", "lives_in", "city"))
-    assert neighbors.tolist() == [1]
-
-
-def test_get_neighbors_unknown_edge_type(simple_graph: HeteroGraph) -> None:
+def test_csr_index_unknown_edge_type(simple_graph: HeteroGraph) -> None:
     with pytest.raises(GraphSchemaError, match="Unknown edge type"):
-        simple_graph.get_neighbors(0, ("person", "flies_to", "city"))
-
-
-def test_csr_matrix_shape(simple_graph: HeteroGraph) -> None:
-    matrix = simple_graph.get_csr_matrix(("person", "lives_in", "city"))
-    assert matrix.shape == (5, 3)
-
-
-def test_csr_matrix_values(simple_graph: HeteroGraph) -> None:
-    matrix = simple_graph.get_csr_matrix(("person", "lives_in", "city"))
-    dense = matrix.to_dense()
-    assert dense[0, 0].item() == 1.0
-    assert dense[0, 1].item() == 1.0
-    assert dense[0, 2].item() == 0.0
-
-
-def test_csr_matrix_cached(simple_graph: HeteroGraph) -> None:
-    m1 = simple_graph.get_csr_matrix(("person", "lives_in", "city"))
-    m2 = simple_graph.get_csr_matrix(("person", "lives_in", "city"))
-    assert m1 is m2
+        simple_graph.csr_index(("person", "flies_to", "city"))
 
 
 def test_node_types(simple_graph: HeteroGraph) -> None:

@@ -4,8 +4,7 @@ Every rule predicts ``lives_in(person, city)``; the two-atom rules use the
 body ``born_in(X, Z0), near(Z0, Y)``.
 """
 
-from anyburl.metrics import RuleMetrics
-from anyburl.rule import Atom, Rule, RuleType, Term
+from anyburl.rule import Atom, Rule, RuleMetrics, RuleType, Term
 
 BORN_IN_NEAR_BODY: tuple[Atom, ...] = (
     Atom(

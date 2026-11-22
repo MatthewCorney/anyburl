@@ -6,8 +6,16 @@ import pytest
 
 from anyburl.exceptions import GraphSchemaError
 from anyburl.graph import HeteroGraph
-from anyburl.metrics import RuleEvaluator, RuleMetrics, aggregate_confidence
-from anyburl.rule import Atom, Rule, RuleConfig, RuleType, Term
+from anyburl.rule import (
+    Atom,
+    Rule,
+    RuleConfig,
+    RuleMetrics,
+    RuleType,
+    Term,
+    aggregate_confidence,
+)
+from anyburl.rule_evaluation import RuleEvaluator, RuleSet
 from tests.rules import ac2_born_in, lives_in, object_grounded, subject_grounded
 
 PERMISSIVE = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
@@ -154,7 +162,7 @@ def test_evaluate_batch_max_results(
     results = evaluator.evaluate_batch(
         [cyclic_rule, cyclic_rule, cyclic_rule], max_results=1
     )
-    assert len(results) == 1
+    assert results == RuleSet.of([(cyclic_rule, evaluator.evaluate(cyclic_rule))])
 
 
 def test_batch_evaluation_matches_single_evaluation(

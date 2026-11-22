@@ -22,9 +22,7 @@ from .evaluation import (
     summarize_ranks,
 )
 from .exceptions import ConfigurationError, NotFittedError
-from .factories import build_triple_sampler, build_walk_engine
 from .graph import HeteroGraph
-from .metrics import RuleEvaluator, RuleMetrics, RuleSet
 from .prediction import MultiRelationPredictor, Prediction, PredictionConfig
 from .rule import (
     DEFAULT_MIN_CONFIDENCE,
@@ -37,9 +35,11 @@ from .rule import (
     RuleThresholds,
     RuleType,
 )
-from .sampler import SamplerConfig, SamplingStrategy
+from .rule_evaluation import RuleEvaluator, RuleSet
+from .sampler import SamplerConfig, SamplingStrategy, build_triple_sampler
 from .walk import (
     EdgeWeighting,
+    NumbaWalkEngine,
     PathWalker,
     WalkConfig,
     WalkStrategy,
@@ -175,7 +175,7 @@ class AnyBURL:
         One-step walks generalized into acyclic rules.
     rules : list[Rule]
         Deduplicated candidate rules from generalization.
-    results : list[tuple[Rule, RuleMetrics]]
+    results : RuleSet
         Rules that passed quality thresholds, with their metrics.
     report : AnytimeReport | None
         How the budget was spent, set by ``fit_anytime``.
@@ -189,7 +189,7 @@ class AnyBURL:
         self.paths: list[tuple[list[PathStep], Triple]] = []
         self.acyclic_steps: list[AcyclicStep] = []
         self.rules: list[Rule] = []
-        self.results: list[tuple[Rule, RuleMetrics]] = []
+        self.results: RuleSet = RuleSet.of(())
         self.report: AnytimeReport | None = None
 
     def fit(self, data: HeteroData | HeteroGraph) -> Self:
@@ -336,11 +336,6 @@ class AnyBURL:
         )
         return summarize_ranks([query.rank for query in ranks], config.k_values)
 
-    @property
-    def rule_set(self) -> RuleSet:
-        """Return the rules that passed thresholds, with their metrics."""
-        return RuleSet.of(self.results)
-
     def predictor(
         self, prediction: PredictionConfig | None = None
     ) -> MultiRelationPredictor:
@@ -366,7 +361,7 @@ class AnyBURL:
             raise NotFittedError(
                 "No rules found. Call fit(data) first and ensure rules pass thresholds."
             )
-        return MultiRelationPredictor(graph, self.rule_set, config=prediction)
+        return MultiRelationPredictor(graph, self.results, config=prediction)
 
     def _require_graph(self) -> HeteroGraph:
         """Return the graph, raising if ``fit`` has not been called."""
@@ -384,7 +379,7 @@ class AnyBURL:
 
         def walker_for_length(length: int) -> PathWalker:
             walk_config = cfg.walk_config(min_length=length, max_length=length)
-            return build_walk_engine(graph, walk_config)
+            return NumbaWalkEngine(graph, walk_config)
 
         return MiningStages(
             sample_batch=sample_batch,
@@ -399,7 +394,7 @@ class AnyBURL:
             min_length=self.config.min_walk_length,
             max_length=self.config.max_walk_length,
         )
-        walker = build_walk_engine(graph, walk_config)
+        walker = NumbaWalkEngine(graph, walk_config)
         self.paths = [
             (path, triple)
             for triple in progress(self.triples, desc="Building paths")

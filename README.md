@@ -14,12 +14,11 @@ with an underscore, and the `anyburl.chain` package, are internal.
 |--------|----------------|
 | `core` | Shared domain types: `Triple`, `EdgeTypeTuple`, `BodyChain`, `QueryDirection`, `EntityScorer` |
 | `pipeline` | `AnyBURL` and `AnyBURLConfig`: the end-to-end fit / predict / evaluate entry point |
-| `factories` | Build samplers and walk engines from their configs |
 | `graph` | `HeteroGraph` wrapper over PyG `HeteroData`, its derived-index cache, and edge-type helpers |
-| `sampler/` | Target triple samplers |
+| `sampler` | Target triple samplers and `build_triple_sampler` |
 | `walk/` | The Numba random walk engine and the `PathWalker` protocol |
-| `rule/` | Rule representation (`model`), quality metrics (`quality`), quality floors (`config`), path generalization (`generalizer`) |
-| `metrics/` | The `RuleEvaluator` and `RuleSet` |
+| `rule/` | Rule representation (`model`), quality metrics (`quality`: `RuleMetrics`), quality floors (`config`), path generalization (`generalizer`) |
+| `rule_evaluation/` | The `RuleEvaluator`, which scores candidate rules, and the learned `RuleSet` |
 | `acyclic/` | Length-one acyclic rules end to end: sampling, generalization, evaluation and scoring |
 | `chain/` | Internal engine counting body-chain groundings for evaluation and prediction |
 | `prediction/` | Applying rules: `RuleEvidence`, the fixed-aggregation `RulePredictor`, and `MultiRelationPredictor` |
@@ -27,7 +26,7 @@ with an underscore, and the `anyburl.chain` package, are internal.
 | `anytime` | Budgeted, length-by-length mining loop |
 | `evaluation` | Link prediction metrics (MRR, Hits@K), per relation |
 | `baselines` | Reference scorers for calibrating link prediction results |
-| `split`, `validation_split` | Train/validation/test splitting of a target relation |
+| `split` | Train/validation/test splitting of a target relation |
 | `stratification` | Breaking ranks down by target degree |
 | `exceptions` | `AnyBURLError` hierarchy |
 
