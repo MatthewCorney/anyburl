@@ -117,6 +117,10 @@ disallow_untyped_decorators = false
 module = "anyburl.walk._numba_kernel"
 disallow_untyped_decorators = false
 
+[[tool.mypy.overrides]]
+module = "anyburl.prediction._lexicographic_kernel"
+disallow_untyped_decorators = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

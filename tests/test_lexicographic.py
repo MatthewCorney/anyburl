@@ -11,6 +11,10 @@ from tests.rules import cyclic_born_in_near, metrics_with, subject_grounded
 
 NUM_CANDIDATES = 5
 _CLOSE = 1e-6
+_RANDOM_CANDIDATES = 40
+_RANDOM_CONTRIBUTIONS = 600
+_RANDOM_LEVELS = 4
+_RANDOM_DEPTH = 3
 
 
 def _scores(entries: list[tuple[int, float]], *, depth: int = 10) -> list[float]:
@@ -66,6 +70,43 @@ class TestLexicographicScores:
 
     def test_no_contributions_score_zero(self) -> None:
         assert _scores([]) == [0.0] * NUM_CANDIDATES
+
+
+def _sorted_lists(
+    candidates: torch.Tensor, values: torch.Tensor, depth: int
+) -> list[tuple[float, ...]]:
+    lists: list[list[float]] = [[] for _ in range(_RANDOM_CANDIDATES)]
+    for candidate, value in zip(candidates.tolist(), values.tolist(), strict=True):
+        lists[candidate].append(value)
+    padded = [sorted(found, reverse=True)[:depth] + [0.0] * depth for found in lists]
+    return [tuple(found[:depth]) for found in padded]
+
+
+class TestLexicographicOrder:
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_scores_order_candidates_as_their_sorted_lists(self, seed: int) -> None:
+        generator = torch.Generator().manual_seed(seed)
+        candidates = torch.randint(
+            _RANDOM_CANDIDATES, (_RANDOM_CONTRIBUTIONS,), generator=generator
+        )
+        levels = torch.randint(
+            _RANDOM_LEVELS, (_RANDOM_CONTRIBUTIONS,), generator=generator
+        )
+        values = levels.to(torch.float32) / _RANDOM_LEVELS
+        scores = lexicographic_scores(
+            candidates, values, _RANDOM_CANDIDATES, depth=_RANDOM_DEPTH
+        ).tolist()
+        lists = _sorted_lists(candidates, values, _RANDOM_DEPTH)
+
+        for first in range(_RANDOM_CANDIDATES):
+            for second in range(_RANDOM_CANDIDATES):
+                expected = (lists[first] > lists[second]) - (
+                    lists[first] < lists[second]
+                )
+                actual = (scores[first] > scores[second]) - (
+                    scores[first] < scores[second]
+                )
+                assert actual == expected
 
 
 class TestLexicographicAggregation:
