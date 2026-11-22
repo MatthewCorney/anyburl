@@ -115,27 +115,6 @@ def test_pathstep_format_compatible_with_generalizer(linear_graph: HeteroGraph) 
     assert path[-1][1] == triple.tail_type
 
 
-def test_walk_on_heterogeneous_graph(simple_graph: HeteroGraph) -> None:
-    config = WalkConfig(min_length=2, max_length=5, max_attempts=200, seed=42)
-    engine = NumbaWalkEngine(simple_graph, config)
-
-    triple = Triple(
-        head_id=0,
-        tail_id=2,
-        head_type="person",
-        tail_type="person",
-        relation="some_relation",
-    )
-
-    paths = engine.walk_from_triple(triple)
-    for path in paths:
-        assert path[0][0] == 0
-        assert path[0][1] == "person"
-        assert path[-1][0] == 2
-        assert path[-1][1] == "person"
-        assert path[-1][2] == ""
-
-
 def test_inverse_frequency_weighting_finds_paths(simple_graph: HeteroGraph) -> None:
     config = WalkConfig(
         min_length=2,

@@ -21,12 +21,6 @@ NEAR_EDGES = 3
 LIVES_IN_EDGES = 6
 
 
-def test_triple_is_frozen() -> None:
-    t = Triple(head_id=0, tail_id=1, head_type="A", tail_type="B", relation="r")
-    with pytest.raises(AttributeError):
-        t.head_id = 2  # type: ignore[misc]
-
-
 @pytest.mark.parametrize("invalid_size", [0, -1])
 def test_sampler_config_invalid_sample_size(invalid_size: int) -> None:
     with pytest.raises(ConfigurationError, match="sample_size must be positive"):

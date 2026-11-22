@@ -56,14 +56,15 @@ def _assert_matches_oracle(
     assert actual == expected, f"{signature} vs {head_edge_type}"
 
 
-def test_matches_oracle_on_the_shared_cyclic_rule(
-    evaluator_graph: HeteroGraph,
+@pytest.mark.parametrize(
+    "signature",
+    [(BORN_IN, NEAR), (LIVES_IN,)],
+    ids=["shared_cyclic_rule", "single_atom_chain"],
+)
+def test_matches_oracle_on_the_evaluator_graph(
+    evaluator_graph: HeteroGraph, signature: tuple[EdgeTypeTuple, ...]
 ) -> None:
-    _assert_matches_oracle(evaluator_graph, (BORN_IN, NEAR), LIVES_IN)
-
-
-def test_single_atom_chain(evaluator_graph: HeteroGraph) -> None:
-    _assert_matches_oracle(evaluator_graph, (LIVES_IN,), LIVES_IN)
+    _assert_matches_oracle(evaluator_graph, signature, LIVES_IN)
 
 
 def test_per_row_counts_sum_to_the_total(evaluator_graph: HeteroGraph) -> None:
@@ -114,18 +115,19 @@ def repeated_type_graph() -> HeteroGraph:
     return HeteroGraph(data)
 
 
-def test_node_type_repeated_across_levels(repeated_type_graph: HeteroGraph) -> None:
+@pytest.mark.parametrize(
+    "signature",
+    [(SELF, SELF, CROSS), (SELF, SELF, SELF, CROSS)],
+    ids=["node_type_repeated_across_levels", "repeated_edge_type_within_one_chain"],
+)
+def test_matches_oracle_with_repeated_types(
+    repeated_type_graph: HeteroGraph, signature: tuple[EdgeTypeTuple, ...]
+) -> None:
     """A node reached at level 1 must still be admissible at level 2.
 
     Stamping per row rather than per level would suppress it and undercount.
     """
-    _assert_matches_oracle(repeated_type_graph, (SELF, SELF, CROSS), HEAD_AB)
-
-
-def test_repeated_edge_type_within_one_chain(
-    repeated_type_graph: HeteroGraph,
-) -> None:
-    _assert_matches_oracle(repeated_type_graph, (SELF, SELF, SELF, CROSS), HEAD_AB)
+    _assert_matches_oracle(repeated_type_graph, signature, HEAD_AB)
 
 
 def test_self_loop_edge_type() -> None:
@@ -260,21 +262,20 @@ def test_block_offsets_cover_the_concatenation(evaluator_graph: HeteroGraph) -> 
     assert int(tables.col_offsets[-1]) == tables.col_all.shape[0]
 
 
-def test_rejects_an_empty_chain(evaluator_graph: HeteroGraph) -> None:
-    with pytest.raises(InvalidRuleError, match="at least one edge type"):
-        ChainScanner(evaluator_graph).scan_all_rows((), LIVES_IN)
-
-
-def test_rejects_a_chain_that_does_not_join(evaluator_graph: HeteroGraph) -> None:
-    with pytest.raises(InvalidRuleError, match="does not join"):
-        ChainScanner(evaluator_graph).scan_all_rows((NEAR, BORN_IN), LIVES_IN)
-
-
-def test_rejects_a_chain_whose_start_differs_from_the_head(
-    evaluator_graph: HeteroGraph,
+@pytest.mark.parametrize(
+    ("signature", "match"),
+    [
+        ((), "at least one edge type"),
+        ((NEAR, BORN_IN), "does not join"),
+        ((NEAR,), "chain starts at"),
+    ],
+    ids=["empty", "does_not_join", "start_differs_from_head"],
+)
+def test_rejects_an_invalid_chain(
+    evaluator_graph: HeteroGraph, signature: tuple[EdgeTypeTuple, ...], match: str
 ) -> None:
-    with pytest.raises(InvalidRuleError, match="chain starts at"):
-        ChainScanner(evaluator_graph).scan_all_rows((NEAR,), LIVES_IN)
+    with pytest.raises(InvalidRuleError, match=match):
+        ChainScanner(evaluator_graph).scan_all_rows(signature, LIVES_IN)
 
 
 def test_rejects_a_chain_whose_end_differs_from_the_head(
