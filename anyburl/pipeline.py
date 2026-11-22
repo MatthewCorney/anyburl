@@ -8,6 +8,7 @@ from torch_geometric.data import HeteroData
 
 from ._logging import get_logger, progress
 from .acyclic import AcyclicStep, AcyclicStepSampler, generalize_acyclic
+from .aggregation import AggregatedScorer, AggregationSetup, fit_aggregated_scorer
 from .anytime import (
     AnytimeConfig,
     AnytimeLearner,
@@ -356,12 +357,58 @@ class AnyBURL:
         NotFittedError
             If ``fit`` has not been called or produced no rules.
         """
+        return MultiRelationPredictor(
+            self._require_rules(), self.results, config=prediction
+        )
+
+    def fit_aggregator(
+        self,
+        train_triples: Sequence[Triple],
+        *,
+        edge_type: EdgeTypeTuple | None = None,
+        config: AggregationSetup | None = None,
+    ) -> AggregatedScorer:
+        """Fit a learned aggregator over one relation's rules.
+
+        Parameters
+        ----------
+        train_triples : Sequence[Triple]
+            Triples of one relation held out of the fitted graph, such as
+            validation triples.
+        edge_type : EdgeTypeTuple | None
+            The relation to fit. ``None`` takes it from ``train_triples``.
+        config : AggregationSetup | None
+            Featurizer, sampling and model settings. ``None`` uses the
+            defaults.
+
+        Returns
+        -------
+        AggregatedScorer
+            Ranks queries of the relation against the fitted graph.
+
+        Raises
+        ------
+        NotFittedError
+            If ``fit`` has not been called or produced no rules.
+        ConfigurationError
+            As raised by :func:`~anyburl.aggregation.fit_aggregated_scorer`.
+        """
+        return fit_aggregated_scorer(
+            self._require_rules(),
+            self.results,
+            train_triples,
+            edge_type=edge_type,
+            setup=config,
+        )
+
+    def _require_rules(self) -> HeteroGraph:
+        """Return the graph, raising unless ``fit`` produced rules."""
         graph = self._require_graph()
         if not self.results:
             raise NotFittedError(
                 "No rules found. Call fit(data) first and ensure rules pass thresholds."
             )
-        return MultiRelationPredictor(graph, self.results, config=prediction)
+        return graph
 
     def _require_graph(self) -> HeteroGraph:
         """Return the graph, raising if ``fit`` has not been called."""

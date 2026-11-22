@@ -34,10 +34,12 @@ References
 
 from .aggregation import (
     AggregatedScorer,
+    AggregationSetup,
     AggregatorConfig,
     CandidateFeaturizer,
     CandidateSampling,
     CandidateScope,
+    FeaturizerKind,
     JointFeaturizer,
     KnownAnswers,
     LinearAggregator,
@@ -45,6 +47,7 @@ from .aggregation import (
     SharedFeaturizer,
     build_training_set,
     concat_training_sets,
+    fit_aggregated_scorer,
     ranking_queries,
 )
 from .anytime import (
@@ -148,6 +151,7 @@ from .walk import (
 
 __all__ = [
     "AggregatedScorer",
+    "AggregationSetup",
     "AggregatorConfig",
     "AnyBURL",
     "AnyBURLConfig",
@@ -169,6 +173,7 @@ __all__ = [
     "EntityBalancedTripleSampler",
     "EntityScorer",
     "EvaluationConfig",
+    "FeaturizerKind",
     "GraphSchemaError",
     "GroundingWeighting",
     "HeteroGraph",
@@ -224,6 +229,7 @@ __all__ = [
     "build_training_set",
     "build_triple_sampler",
     "concat_training_sets",
+    "fit_aggregated_scorer",
     "rank_queries_by_edge_type",
     "rank_queries_with_each",
     "ranking_queries",

@@ -7,6 +7,7 @@ from .features import (
     build_features,
     column_of,
 )
+from .fitting import AggregationSetup, FeaturizerKind, fit_aggregated_scorer
 from .model import Aggregator, AggregatorConfig, LinearAggregator
 from .residual import JointFeaturizer, ResidualAggregator
 from .scorer import AggregatedScorer
@@ -24,12 +25,14 @@ from .training import (
 
 __all__ = [
     "AggregatedScorer",
+    "AggregationSetup",
     "Aggregator",
     "AggregatorConfig",
     "CandidateFeature",
     "CandidateFeaturizer",
     "CandidateSampling",
     "CandidateScope",
+    "FeaturizerKind",
     "JointFeaturizer",
     "KnownAnswers",
     "LinearAggregator",
@@ -44,5 +47,6 @@ __all__ = [
     "build_training_set",
     "column_of",
     "concat_training_sets",
+    "fit_aggregated_scorer",
     "ranking_queries",
 ]
