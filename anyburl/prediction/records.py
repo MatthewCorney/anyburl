@@ -11,6 +11,7 @@ from ..rule.quality import NO_UNSEEN_NEGATIVES
 from .scoring import ConfidenceAggregation, GroundingWeighting
 
 __all__ = [
+    "AcyclicEvidence",
     "ChainEvidence",
     "Prediction",
     "PredictionConfig",
@@ -122,7 +123,7 @@ class Prediction:
     relation : str
         Predicted relation name.
     score : float
-        Noisy-or aggregated confidence across all firing rules.
+        Firing rules' confidences combined by the configured aggregation.
     explanations : tuple[RuleFiring, ...]
         The rule firings behind the score, strongest first. Only
         :meth:`~anyburl.prediction.RulePredictor.top_tails` fills this in.

@@ -219,7 +219,7 @@ class Rule:
     body : tuple[Atom, ...]
         The antecedent atoms (conjunctive conditions).
     rule_type : RuleType
-        The structural classification (AC1, AC2, or CYCLIC).
+        The structural classification (AC1, AC2, CYCLIC or ACYCLIC).
     """
 
     head: Atom
@@ -260,7 +260,8 @@ class Rule:
     def __str__(self) -> str:
         """Return human-readable rule string.
 
-        Example: ``born_in(X, Y) :- lives_in(X, Z0), located_in(Z0, Y)``
+        Example: ``person_lives_in_city(X, Y) :- person_born_in_city(X, Z0),
+        city_near_city(Z0, Y)``
         """
         body_str = ", ".join(str(atom) for atom in self.body)
         return f"{self.head} :- {body_str}"

@@ -100,7 +100,7 @@ class RulePredictor:
         return predictions
 
     def score_tails(self, head_id: int) -> Tensor:
-        """Compute noisy-or scores for all candidate tails given a head.
+        """Score all candidate tails of a head under the configured aggregation.
 
         Parameters
         ----------
@@ -117,7 +117,7 @@ class RulePredictor:
         )
 
     def score_heads(self, tail_id: int) -> Tensor:
-        """Compute noisy-or scores for all candidate heads given a tail.
+        """Score all candidate heads of a tail under the configured aggregation.
 
         Parameters
         ----------

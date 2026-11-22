@@ -14,7 +14,7 @@ from .anytime import (
     AnytimeReport,
     MiningStages,
 )
-from .core import EdgeTypeTuple, Triple
+from .core import DEFAULT_RANDOM_SEED, EdgeTypeTuple, Triple
 from .evaluation import (
     EvaluationConfig,
     LinkPredictionMetrics,
@@ -44,7 +44,7 @@ from .walk import (
     WalkConfig,
     WalkStrategy,
 )
-from .walk.base import DEFAULT_MIN_WALK_LENGTH, DEFAULT_RANDOM_SEED
+from .walk.base import DEFAULT_MIN_WALK_LENGTH
 
 __all__ = ["AnyBURL", "AnyBURLConfig"]
 

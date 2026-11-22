@@ -6,7 +6,17 @@ from typing import Protocol
 
 from torch import Tensor
 
-__all__ = ["BodyChain", "EdgeTypeTuple", "EntityScorer", "QueryDirection", "Triple"]
+__all__ = [
+    "DEFAULT_RANDOM_SEED",
+    "BodyChain",
+    "EdgeTypeTuple",
+    "EntityScorer",
+    "QueryDirection",
+    "Triple",
+]
+
+DEFAULT_RANDOM_SEED: int = 42
+"""Seed every stochastic stage uses unless configured otherwise."""
 
 EdgeTypeTuple = tuple[str, str, str]
 """(source_node_type, relation, destination_node_type)."""

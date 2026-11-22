@@ -1,4 +1,4 @@
-"""Triple sampling configuration, the ``Triple`` record, and base sampler."""
+"""Triple sampling configuration and the base sampler."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -7,12 +7,11 @@ from enum import StrEnum
 import torch
 from torch import Tensor
 
-from ..core import EdgeTypeTuple, Triple
+from ..core import DEFAULT_RANDOM_SEED, EdgeTypeTuple, Triple
 from ..exceptions import ConfigurationError, GraphSchemaError
 from ..graph import HeteroGraph
 
 DEFAULT_SAMPLE_SIZE: int = 1000
-DEFAULT_RANDOM_SEED: int = 42
 EDGE_TYPE_TUPLE_LENGTH: int = 3
 
 

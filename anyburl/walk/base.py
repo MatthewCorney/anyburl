@@ -4,14 +4,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from ..core import Triple
+from ..core import DEFAULT_RANDOM_SEED, Triple
 from ..exceptions import ConfigurationError
 from ..rule import PathStep
 
 DEFAULT_MAX_WALK_LENGTH: int = 5
 DEFAULT_MIN_WALK_LENGTH: int = 2
 DEFAULT_MAX_WALK_ATTEMPTS: int = 100
-DEFAULT_RANDOM_SEED: int = 42
 
 EMPTY_RELATION: str = ""
 """Relation of a walk's final step, which has no outgoing edge."""
