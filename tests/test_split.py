@@ -129,19 +129,15 @@ def test_split_without_inverse_edge_type_is_a_noop(mirrored_data: HeteroData) ->
     assert len(split.test_triples) == 3
 
 
-def test_edge_parallel_attribute_on_target_raises(mirrored_data: HeteroData) -> None:
-    """Filtering only edge_index would leave edge_attr misaligned."""
-    mirrored_data[TARGET].edge_attr = torch.ones(NUM_EDGES, 1)
+@pytest.mark.parametrize("edge_type", [TARGET, INVERSE], ids=["target", "inverse"])
+def test_edge_parallel_attribute_raises(
+    mirrored_data: HeteroData, edge_type: tuple[str, str, str]
+) -> None:
+    """Filtering only edge_index would leave edge_attr misaligned.
 
-    with pytest.raises(GraphSchemaError, match="edge-parallel attributes"):
-        split_target_edges(
-            mirrored_data, SplitConfig(target_edge_type=TARGET, test_fraction=0.3)
-        )
-
-
-def test_edge_parallel_attribute_on_inverse_raises(mirrored_data: HeteroData) -> None:
-    """The mirrored inverse is filtered too, so it must be checked as well."""
-    mirrored_data[INVERSE].edge_attr = torch.ones(NUM_EDGES, 1)
+    The mirrored inverse is filtered too, so it must be checked as well.
+    """
+    mirrored_data[edge_type].edge_attr = torch.ones(NUM_EDGES, 1)
 
     with pytest.raises(GraphSchemaError, match="edge-parallel attributes"):
         split_target_edges(

@@ -8,11 +8,14 @@ from anyburl.rule import (
     Rule,
     RuleConfig,
     RuleGeneralizer,
+    RuleMetrics,
     RuleThresholds,
     RuleType,
     Term,
     TermKind,
 )
+from anyburl.rule.quality import corrected_confidence
+from tests.rules import cyclic_born_in_near
 
 X_PERSON = Term.variable("X", node_type="person")
 Y_CITY = Term.variable("Y", node_type="city")
@@ -43,12 +46,16 @@ def test_term_constant_kind() -> None:
     assert term.node_type == "city"
 
 
-def test_term_variable_str() -> None:
-    assert str(Term.variable("X", node_type="person")) == "X"
-
-
-def test_term_constant_str() -> None:
-    assert str(Term.constant(3, node_type="city")) == "city:3"
+@pytest.mark.parametrize(
+    ("term", "expected"),
+    [
+        (Term.variable("X", node_type="person"), "X"),
+        (Term.constant(3, node_type="city"), "city:3"),
+    ],
+    ids=["variable", "constant"],
+)
+def test_term_str(term: Term, expected: str) -> None:
+    assert str(term) == expected
 
 
 @pytest.mark.parametrize(
@@ -68,65 +75,21 @@ def test_term_invalid_combination_raises(
 
 
 def test_atom_edge_signature() -> None:
-    atom = Atom(
-        relation="born_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
+    atom = _atom("born_in", X_PERSON, Y_CITY)
     assert atom.edge_signature == ("person", "born_in", "city")
 
 
 def test_atom_str() -> None:
-    atom = Atom(
-        relation="born_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
+    atom = _atom("born_in", X_PERSON, Y_CITY)
     assert str(atom) == "person_born_in_city(X, Y)"
 
 
 def test_rule_length() -> None:
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
-    assert rule.length == 2
+    assert cyclic_born_in_near().length == 2
 
 
 def test_rule_variables() -> None:
-    head = Atom(
-        relation="lives_in",
-        subject=Term.variable("X", node_type="person"),
-        object_=Term.variable("Y", node_type="city"),
-    )
-    body = (
-        Atom(
-            relation="born_in",
-            subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
-        ),
-        Atom(
-            relation="near",
-            subject=Term.variable("Z0", node_type="city"),
-            object_=Term.variable("Y", node_type="city"),
-        ),
-    )
-    rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
-    assert rule.variables == frozenset({"X", "Y", "Z0"})
+    assert cyclic_born_in_near().variables == frozenset({"X", "Y", "Z0"})
 
 
 def test_rule_constants() -> None:
@@ -178,13 +141,6 @@ def test_rule_str_contains_key_parts() -> None:
 def test_rule_config_invalid(kwargs: dict[str, float], match: str) -> None:
     with pytest.raises(ConfigurationError, match=match):
         RuleConfig(**kwargs)  # type: ignore[arg-type]
-
-
-def test_rule_config_valid() -> None:
-    config = RuleConfig(min_support=2, min_confidence=0.1, min_head_coverage=0.1)
-    assert config.min_support == 2
-    assert config.min_confidence == 0.1
-    assert config.min_head_coverage == 0.1
 
 
 @pytest.mark.parametrize(
@@ -381,3 +337,21 @@ def test_per_type_override_replaces_the_defaults() -> None:
 def test_invalid_threshold_override_is_rejected() -> None:
     with pytest.raises(ConfigurationError, match="min_confidence must be in"):
         RuleThresholds(min_confidence=1.5)
+
+
+class TestCorrectedConfidence:
+    def test_zero_unseen_negatives_keeps_raw_confidence(self) -> None:
+        metrics = RuleMetrics(2, 1.0, 0.5, 2)
+
+        assert corrected_confidence(metrics, 0) == pytest.approx(1.0)
+
+    def test_unseen_negatives_shrink_rules_with_few_predictions(self) -> None:
+        few = RuleMetrics(
+            support=2, confidence=1.0, head_coverage=0.1, num_predictions=2
+        )
+        many = RuleMetrics(
+            support=90, confidence=0.9, head_coverage=0.1, num_predictions=100
+        )
+
+        assert corrected_confidence(few, 5) == pytest.approx(2 / 7)
+        assert corrected_confidence(many, 5) > corrected_confidence(few, 5)

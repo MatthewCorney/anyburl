@@ -8,10 +8,6 @@ from anyburl.exceptions import GraphSchemaError
 from anyburl.graph import HeteroGraph, mirrored_edge_type
 
 
-def test_builds_from_valid_data(simple_graph: HeteroGraph) -> None:
-    assert simple_graph is not None
-
-
 def test_raises_on_no_edge_types() -> None:
     data = HeteroData()
     data["person"].num_nodes = 5
@@ -35,9 +31,10 @@ def test_node_count(simple_graph: HeteroGraph, node_type: str, expected: int) ->
     assert simple_graph.node_count(node_type) == expected
 
 
-def test_node_count_unknown_type(simple_graph: HeteroGraph) -> None:
+@pytest.mark.parametrize("method", ["node_count", "outgoing_edge_types"])
+def test_unknown_node_type_raises(simple_graph: HeteroGraph, method: str) -> None:
     with pytest.raises(GraphSchemaError, match="Unknown node type"):
-        simple_graph.node_count("animal")
+        getattr(simple_graph, method)("animal")
 
 
 @pytest.mark.parametrize(
@@ -56,18 +53,14 @@ def test_edge_count(
     assert simple_graph.edge_count(edge_type) == expected
 
 
-def test_edge_count_unknown_type(simple_graph: HeteroGraph) -> None:
+@pytest.mark.parametrize("method", ["edge_count", "csr_index", "edge_index"])
+def test_unknown_edge_type_raises(simple_graph: HeteroGraph, method: str) -> None:
     with pytest.raises(GraphSchemaError, match="Unknown edge type"):
-        simple_graph.edge_count(("person", "flies_to", "city"))
+        getattr(simple_graph, method)(("person", "flies_to", "city"))
 
 
 def test_total_edge_count(simple_graph: HeteroGraph) -> None:
     assert simple_graph.total_edge_count() == 14
-
-
-def test_csr_index_unknown_edge_type(simple_graph: HeteroGraph) -> None:
-    with pytest.raises(GraphSchemaError, match="Unknown edge type"):
-        simple_graph.csr_index(("person", "flies_to", "city"))
 
 
 def test_node_types(simple_graph: HeteroGraph) -> None:
@@ -87,19 +80,9 @@ def test_outgoing_edge_types(simple_graph: HeteroGraph) -> None:
     assert ("person", "knows", "person") in person_ets
 
 
-def test_outgoing_edge_types_unknown(simple_graph: HeteroGraph) -> None:
-    with pytest.raises(GraphSchemaError, match="Unknown node type"):
-        simple_graph.outgoing_edge_types("animal")
-
-
 def test_edge_index_shape(simple_graph: HeteroGraph) -> None:
     ei = simple_graph.edge_index(("person", "knows", "person"))
     assert ei.shape == (2, 5)
-
-
-def test_edge_index_unknown(simple_graph: HeteroGraph) -> None:
-    with pytest.raises(GraphSchemaError, match="Unknown edge type"):
-        simple_graph.edge_index(("person", "flies_to", "city"))
 
 
 def test_mirrored_edge_type_swaps_endpoints() -> None:

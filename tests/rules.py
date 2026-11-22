@@ -5,6 +5,7 @@ body ``born_in(X, Z0), near(Z0, Y)``.
 """
 
 from anyburl.rule import Atom, Rule, RuleMetrics, RuleType, Term
+from anyburl.rule_evaluation import RuleSet
 
 BORN_IN_NEAR_BODY: tuple[Atom, ...] = (
     Atom(
@@ -106,4 +107,20 @@ def subject_constant_near_rule(person_id: int) -> Rule:
             ),
         ),
         rule_type=RuleType.ACYCLIC,
+    )
+
+
+def multi_grounding_rule_set() -> RuleSet:
+    """Return the cyclic ``born_in, near`` rule at confidence 0.5."""
+    return RuleSet.of([(cyclic_born_in_near(), RuleMetrics(2, 0.5, 0.5, 4))])
+
+
+def cyclic_and_grounded_rule_set() -> RuleSet:
+    """Return the cyclic rule plus AC1 rules grounded on person 0 and city 1."""
+    return RuleSet.of(
+        [
+            (cyclic_born_in_near(), RuleMetrics(1, 0.5, 0.33, 3)),
+            (subject_grounded(0), RuleMetrics(1, 0.7, 0.33, 3)),
+            (object_grounded(1), RuleMetrics(1, 0.6, 0.33, 3)),
+        ]
     )

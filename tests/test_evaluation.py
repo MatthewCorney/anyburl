@@ -7,7 +7,6 @@ from anyburl.core import Triple
 from anyburl.evaluation import (
     EvaluationConfig,
     LinkPredictionEvaluator,
-    LinkPredictionMetrics,
     TieHandling,
     rank_queries_with_each,
     rank_with_ties,
@@ -198,23 +197,6 @@ def test_empty_triples_returns_zeros(
     assert metrics.mrr == 0.0
     assert metrics.num_queries == 0
     assert all(v == 0.0 for v in metrics.hits_at_k.values())
-
-
-def test_link_prediction_metrics_values() -> None:
-    metrics = LinkPredictionMetrics(
-        mrr=0.5,
-        hits_at_k={1: 0.3, 3: 0.5},
-        num_queries=10,
-    )
-    assert metrics.mrr == 0.5
-    assert metrics.hits_at_k[1] == 0.3
-    assert metrics.num_queries == 10
-
-
-def test_link_prediction_metrics_frozen() -> None:
-    metrics = LinkPredictionMetrics(mrr=0.5)
-    with pytest.raises(AttributeError):
-        metrics.mrr = 0.8  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ import pytest
 from torch_geometric.data import HeteroData
 
 from anyburl import AnyBURL, AnyBURLConfig, AnytimeConfig
-from anyburl.exceptions import ConfigurationError
+from anyburl.exceptions import ConfigurationError, NotFittedError
 from anyburl.graph import HeteroGraph
 
 LIVES_IN = ("person", "lives_in", "city")
@@ -34,6 +34,12 @@ class TestFit:
         assert from_data.results
         assert from_graph.results == from_data.results
         assert from_graph.rules == from_data.rules
+
+
+class TestPredict:
+    def test_predict_before_fit_raises(self) -> None:
+        with pytest.raises(NotFittedError, match="fit"):
+            AnyBURL(AnyBURLConfig()).predict()
 
 
 class TestFitAnytime:

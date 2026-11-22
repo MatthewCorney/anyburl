@@ -117,3 +117,15 @@ def perfect_eval_graph() -> HeteroGraph:
 def cyclic_rule() -> Rule:
     """Create: lives_in(X, Y) :- born_in(X, Z0), near(Z0, Y)."""
     return cyclic_born_in_near()
+
+
+@pytest.fixture
+def multi_grounding_graph() -> HeteroGraph:
+    """Person 0 reaches city 2 by two body groundings and city 3 by one."""
+    data = HeteroData()
+    data["person"].num_nodes = 1
+    data["city"].num_nodes = 4
+    data["person", "born_in", "city"].edge_index = torch.tensor([[0, 0], [0, 1]])
+    data["city", "near", "city"].edge_index = torch.tensor([[0, 1, 0], [2, 2, 3]])
+    data["person", "lives_in", "city"].edge_index = torch.tensor([[0], [2]])
+    return HeteroGraph(data)
