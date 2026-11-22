@@ -14,6 +14,7 @@ from ..graph import HeteroGraph
 from ..metrics import RuleMetrics
 from ..rule import Rule
 from .evidence import RuleEvidence
+from .lexicographic import lexicographic_scores
 from .records import Prediction, PredictionConfig, RuleFiring
 from .scoring import TIE_BREAK_WEIGHT, ConfidenceAggregation, weight_for_candidate
 
@@ -282,5 +283,11 @@ def combine_evidence(
             best.scatter_reduce_(0, acyclic_ids, confidences, "amax")
             best.scatter_reduce_(0, chains.candidates, chains.contributions, "amax")
             return best + TIE_BREAK_WEIGHT * (1.0 - complement)
+        case ConfidenceAggregation.LEXICOGRAPHIC:
+            return lexicographic_scores(
+                torch.cat([chains.candidates, acyclic_ids]),
+                torch.cat([chains.contributions, confidences.to(torch.float)]),
+                complement.numel(),
+            )
         case _ as unreachable:
             assert_never(unreachable)

@@ -34,10 +34,15 @@ class ConfidenceAggregation(StrEnum):
         noisy-or term. Approximates AnyBURL's ranking by the best rule,
         then the next best, so many weak rules cannot outrank one strong
         rule.
+    LEXICOGRAPHIC : str
+        AnyBURL's ranking: each candidate's strongest contributions, sorted
+        descending, compared position by position. Scores stay within a
+        small offset of the strongest contribution.
     """
 
     NOISY_OR = "noisy_or"
     MAXIMUM = "maximum"
+    LEXICOGRAPHIC = "lexicographic"
 
 
 class GroundingWeighting(StrEnum):
