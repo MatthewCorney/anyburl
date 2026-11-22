@@ -56,6 +56,15 @@ class AggregatedScorer:
         self._aggregator = aggregator
         self._scope = scope
 
+    @property
+    def aggregator(self) -> Aggregator:
+        """Return the fitted model."""
+        return self._aggregator
+
+    def feature_names(self) -> tuple[str, ...]:
+        """Return the names of the feature columns the model reads."""
+        return self._featurizer.feature_names()
+
     def score_tails(self, head_id: int) -> Tensor:
         """Return learned scores over all candidate tails of ``head_id``."""
         return self._score(QueryDirection.TAIL, head_id)
