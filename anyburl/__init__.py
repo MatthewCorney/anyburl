@@ -1,29 +1,17 @@
-"""AnyBURL: Anytime Bottom-Up Rule Learning for knowledge graphs.
+"""AnyBURL: Anytime Bottom-Up Rule Learning for heterogeneous knowledge graphs.
 
-This package implements the AnyBURL algorithm for learning first-order
-Horn rules from heterogeneous knowledge graphs backed by PyTorch Geometric.
+Learns first-order Horn rules from a PyTorch Geometric ``HeteroData`` graph
+and applies them to link prediction.
 
-Algorithm Pipeline
-------------------
-The learning process follows four stages:
-
-1. **Sample** --- draw target triples according to a
-   :class:`SamplingStrategy`.
-2. **Walk** --- run bounded random walks from each triple's head entity,
-   keeping paths that reach its tail.
-3. **Generalize** --- :class:`RuleGeneralizer` replaces the entities in each
-   path with variables, producing cyclic and AC1 :class:`Rule` objects.
-4. **Evaluate** --- :class:`RuleEvaluator` computes support, confidence and
-   head coverage (:class:`RuleMetrics`) by counting body-chain groundings,
-   and keeps the rules passing their thresholds in a :class:`RuleSet`.
-
-Learned rules are grounded into :class:`RuleEvidence`, combined into scores by
-:class:`RulePredictor` or a learned :class:`AggregatedScorer`, and scored with
-:class:`LinkPredictionEvaluator`; :func:`stratify_by_degree` breaks its
-per-query ranks down by how well-connected each target is.
-
-Everything exported here is the public API. Subpackage modules prefixed with
-an underscore, and the :mod:`anyburl.chain` grounding engine, are internal.
+The top level exports the everyday API: :class:`AnyBURL` and its config,
+graph and domain types, rules and their metrics, prediction, evaluation,
+splits, anytime mining, the learned aggregator, and the exception hierarchy.
+Advanced building blocks stay in their subpackages: :mod:`anyburl.rule`,
+:mod:`anyburl.rule_evaluation`, :mod:`anyburl.sampler`, :mod:`anyburl.walk`,
+:mod:`anyburl.prediction`, :mod:`anyburl.aggregation`,
+:mod:`anyburl.evaluation`, :mod:`anyburl.anytime`, :mod:`anyburl.baselines`
+and :mod:`anyburl.stratification`. Modules prefixed with an underscore, and
+:mod:`anyburl.chain`, are internal.
 
 References
 ----------
@@ -36,47 +24,15 @@ from .aggregation import (
     AggregatedScorer,
     AggregationSetup,
     AggregatorConfig,
-    CandidateFeaturizer,
-    CandidateSampling,
-    CandidateScope,
     FeaturizerKind,
-    JointFeaturizer,
-    KnownAnswers,
-    LinearAggregator,
-    ResidualAggregator,
-    SharedFeaturizer,
-    build_training_set,
-    concat_training_sets,
-    fit_aggregated_scorer,
-    ranking_queries,
 )
-from .anytime import (
-    AnytimeConfig,
-    AnytimeLearner,
-    AnytimeReport,
-    LengthReport,
-)
-from .baselines import (
-    MetaPathScorer,
-    PopularityScorer,
-    RandomScorer,
-    ZeroScorer,
-)
-from .core import (
-    BodyChain,
-    EdgeTypeTuple,
-    EntityScorer,
-    QueryDirection,
-    Triple,
-)
+from .anytime import AnytimeConfig, AnytimeReport
+from .core import EdgeTypeTuple, EntityScorer, QueryDirection, Triple
 from .evaluation import (
     EvaluationConfig,
     LinkPredictionEvaluator,
     LinkPredictionMetrics,
-    QueryRank,
     TieHandling,
-    rank_queries_by_edge_type,
-    rank_queries_with_each,
     summarize_ranks,
 )
 from .exceptions import (
@@ -87,46 +43,19 @@ from .exceptions import (
     NotFittedError,
 )
 from .graph import HeteroGraph
-from .pipeline import (
-    AnyBURL,
-    AnyBURLConfig,
-)
+from .pipeline import AnyBURL, AnyBURLConfig
 from .prediction import (
     ConfidenceAggregation,
     GroundingWeighting,
     MultiRelationPredictor,
     Prediction,
     PredictionConfig,
-    RuleEvidence,
     RuleFiring,
     RulePredictor,
 )
-from .rule import (
-    Atom,
-    PathStep,
-    Rule,
-    RuleConfig,
-    RuleGeneralizer,
-    RuleMetrics,
-    RuleThresholds,
-    RuleType,
-    Term,
-    TermKind,
-    aggregate_confidence,
-)
-from .rule_evaluation import (
-    RuleEvaluator,
-    RuleSet,
-)
-from .sampler import (
-    BaseTripleSampler,
-    EntityBalancedTripleSampler,
-    SamplerConfig,
-    SamplingStrategy,
-    UniformTripleSampler,
-    WeightedTripleSampler,
-    build_triple_sampler,
-)
+from .rule import Rule, RuleMetrics, RuleThresholds, RuleType
+from .rule_evaluation import RuleSet
+from .sampler import SamplingStrategy
 from .split import (
     InverseEdgeHandling,
     SplitConfig,
@@ -135,19 +64,7 @@ from .split import (
     split_target_edges,
     split_with_validation,
 )
-from .stratification import (
-    DegreeBucket,
-    RelationDegrees,
-    StratificationConfig,
-    relation_degrees,
-    stratify_by_degree,
-)
-from .walk import (
-    EdgeWeighting,
-    NumbaWalkEngine,
-    WalkConfig,
-    WalkStrategy,
-)
+from .walk import EdgeWeighting, WalkStrategy
 
 __all__ = [
     "AggregatedScorer",
@@ -157,20 +74,11 @@ __all__ = [
     "AnyBURLConfig",
     "AnyBURLError",
     "AnytimeConfig",
-    "AnytimeLearner",
     "AnytimeReport",
-    "Atom",
-    "BaseTripleSampler",
-    "BodyChain",
-    "CandidateFeaturizer",
-    "CandidateSampling",
-    "CandidateScope",
     "ConfidenceAggregation",
     "ConfigurationError",
-    "DegreeBucket",
     "EdgeTypeTuple",
     "EdgeWeighting",
-    "EntityBalancedTripleSampler",
     "EntityScorer",
     "EvaluationConfig",
     "FeaturizerKind",
@@ -179,63 +87,28 @@ __all__ = [
     "HeteroGraph",
     "InvalidRuleError",
     "InverseEdgeHandling",
-    "JointFeaturizer",
-    "KnownAnswers",
-    "LengthReport",
-    "LinearAggregator",
     "LinkPredictionEvaluator",
     "LinkPredictionMetrics",
-    "MetaPathScorer",
     "MultiRelationPredictor",
     "NotFittedError",
-    "NumbaWalkEngine",
-    "PathStep",
-    "PopularityScorer",
     "Prediction",
     "PredictionConfig",
     "QueryDirection",
-    "QueryRank",
-    "RandomScorer",
-    "RelationDegrees",
-    "ResidualAggregator",
     "Rule",
-    "RuleConfig",
-    "RuleEvaluator",
-    "RuleEvidence",
     "RuleFiring",
-    "RuleGeneralizer",
     "RuleMetrics",
     "RulePredictor",
     "RuleSet",
     "RuleThresholds",
     "RuleType",
-    "SamplerConfig",
     "SamplingStrategy",
-    "SharedFeaturizer",
     "SplitConfig",
-    "StratificationConfig",
-    "Term",
-    "TermKind",
     "TieHandling",
     "Triple",
     "TripleSplit",
-    "UniformTripleSampler",
     "ValidationSplit",
-    "WalkConfig",
     "WalkStrategy",
-    "WeightedTripleSampler",
-    "ZeroScorer",
-    "aggregate_confidence",
-    "build_training_set",
-    "build_triple_sampler",
-    "concat_training_sets",
-    "fit_aggregated_scorer",
-    "rank_queries_by_edge_type",
-    "rank_queries_with_each",
-    "ranking_queries",
-    "relation_degrees",
     "split_target_edges",
     "split_with_validation",
-    "stratify_by_degree",
     "summarize_ranks",
 ]

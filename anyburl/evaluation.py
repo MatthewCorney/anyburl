@@ -13,6 +13,19 @@ from .core import EdgeTypeTuple, EntityScorer, QueryDirection, Triple
 from .exceptions import ConfigurationError
 from .graph import HeteroGraph
 
+__all__ = [
+    "DEFAULT_K_VALUES",
+    "EvaluationConfig",
+    "LinkPredictionEvaluator",
+    "LinkPredictionMetrics",
+    "QueryRank",
+    "TieHandling",
+    "rank_queries_by_edge_type",
+    "rank_queries_with_each",
+    "rank_with_ties",
+    "summarize_ranks",
+]
+
 logger = get_logger(__name__)
 
 DEFAULT_K_VALUES: tuple[int, ...] = (1, 3, 10)

@@ -11,20 +11,18 @@ from anyburl import (
     AggregationSetup,
     AnyBURL,
     AnyBURLConfig,
-    CandidateSampling,
-    CandidateScope,
     EdgeTypeTuple,
     EvaluationConfig,
     FeaturizerKind,
     HeteroGraph,
-    LinearAggregator,
     LinkPredictionEvaluator,
     SplitConfig,
     Triple,
     ValidationSplit,
-    ZeroScorer,
     split_with_validation,
 )
+from anyburl.aggregation import CandidateSampling, CandidateScope, LinearAggregator
+from anyburl.baselines import ZeroScorer
 from anyburl.exceptions import ConfigurationError, NotFittedError
 
 NUM_PERSONS = 30

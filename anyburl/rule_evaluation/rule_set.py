@@ -15,19 +15,19 @@ class RuleSet:
 
     Parameters
     ----------
-    results : tuple[tuple[Rule, RuleMetrics], ...]
+    pairs : tuple[tuple[Rule, RuleMetrics], ...]
         Rules paired with their metrics, in the order they were learned.
     """
 
-    results: tuple[tuple[Rule, RuleMetrics], ...]
+    pairs: tuple[tuple[Rule, RuleMetrics], ...]
 
     @classmethod
-    def of(cls, results: Iterable[tuple[Rule, RuleMetrics]]) -> "RuleSet":
+    def of(cls, pairs: Iterable[tuple[Rule, RuleMetrics]]) -> "RuleSet":
         """Build a rule set from ``(rule, metrics)`` pairs.
 
         Parameters
         ----------
-        results : Iterable[tuple[Rule, RuleMetrics]]
+        pairs : Iterable[tuple[Rule, RuleMetrics]]
             Rules paired with their metrics.
 
         Returns
@@ -35,15 +35,15 @@ class RuleSet:
         RuleSet
             The pairs, in the given order.
         """
-        return cls(results=tuple(results))
+        return cls(pairs=tuple(pairs))
 
     def __len__(self) -> int:
         """Return the number of rules."""
-        return len(self.results)
+        return len(self.pairs)
 
     def __iter__(self) -> Iterator[tuple[Rule, RuleMetrics]]:
         """Iterate ``(rule, metrics)`` pairs in learned order."""
-        return iter(self.results)
+        return iter(self.pairs)
 
     def head_edge_types(self) -> tuple[EdgeTypeTuple, ...]:
         """Return the relations the rules predict, in order of first appearance."""

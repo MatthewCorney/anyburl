@@ -102,7 +102,9 @@ def main() -> None:
     print(f"  Rules passing filter:{len(results)}")
     print()
 
-    results.sort(key=lambda x: (x[1].confidence, x[1].support), reverse=True)
+    results = sorted(
+        results, key=lambda x: (x[1].confidence, x[1].support), reverse=True
+    )
 
     print(f"Top {min(TOP_K_RULES, len(results))} Rules (by confidence):")
     print("-" * 100)

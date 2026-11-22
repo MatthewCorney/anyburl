@@ -12,10 +12,10 @@ from anyburl import (
     MultiRelationPredictor,
     RulePredictor,
     RuleSet,
-    ZeroScorer,
-    rank_queries_by_edge_type,
 )
+from anyburl.baselines import ZeroScorer
 from anyburl.core import Triple
+from anyburl.evaluation import rank_queries_by_edge_type
 from anyburl.exceptions import ConfigurationError
 from anyburl.graph import HeteroGraph
 from anyburl.rule import Atom, Rule, RuleType, Term
