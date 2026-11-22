@@ -15,6 +15,15 @@ from ._logging import get_logger
 from .core import EdgeTypeTuple
 from .exceptions import GraphSchemaError, InvalidRuleError
 
+__all__ = [
+    "SPARSE_CSR_WARNING_PATTERN",
+    "CsrIndex",
+    "HeteroGraph",
+    "mirrored_edge_type",
+    "suppress_sparse_csr_warning",
+    "validate_chain",
+]
+
 logger = get_logger(__name__)
 
 SPARSE_CSR_WARNING_PATTERN: str = ".*Sparse CSR tensor support.*"

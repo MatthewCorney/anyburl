@@ -1,6 +1,5 @@
 """End-to-end tests: split, learn rules, fit an aggregator, rank test triples."""
 
-import math
 from collections.abc import Callable, Sequence
 
 import pytest
@@ -22,13 +21,14 @@ from anyburl import (
     split_with_validation,
 )
 from anyburl.aggregation import CandidateSampling, CandidateScope, LinearAggregator
-from anyburl.baselines import ZeroScorer
 from anyburl.exceptions import ConfigurationError, NotFittedError
 
 NUM_PERSONS = 30
 NUM_CITIES = 5
 SPLIT_FRACTION = 0.2
 SEED = 7
+EXPECTED_MRR = 0.875
+EXPECTED_HITS = {1: 0.75, 3: 1.0, 10: 1.0}
 LIVES_IN: EdgeTypeTuple = ("person", "lives_in", "city")
 BORN_IN: EdgeTypeTuple = ("person", "born_in", "city")
 CONFIG = AnyBURLConfig(
@@ -89,7 +89,7 @@ def pipeline(split: ValidationSplit) -> AnyBURL:
 def _evaluator(
     pipeline: AnyBURL, split: ValidationSplit, *, setup: AggregationSetup
 ) -> LinkPredictionEvaluator:
-    scorer = pipeline.fit_aggregator(split.validation_triples, config=setup)
+    scorer = pipeline.fit_aggregator(split.validation_triples, setup=setup)
     return LinkPredictionEvaluator(
         scorer, HeteroGraph(split.train_data), EvaluationConfig()
     )
@@ -97,41 +97,15 @@ def _evaluator(
 
 class TestFitAggregator:
     @pytest.mark.parametrize("setup", SETUPS)
-    def test_metrics_on_test_triples_are_in_range(
+    def test_ranks_test_triples_as_well_as_the_rules_allow(
         self, pipeline: AnyBURL, split: ValidationSplit, setup: AggregationSetup
     ) -> None:
-        evaluator = _evaluator(pipeline, split, setup=setup)
-
-        metrics = evaluator.evaluate(split.test_triples)
-
-        assert metrics.num_queries == 2 * len(split.test_triples)
-        assert math.isfinite(metrics.mrr)
-        assert 0.0 < metrics.mrr <= 1.0
-        assert all(0.0 <= hits <= 1.0 for hits in metrics.hits_at_k.values())
-
-    @pytest.mark.parametrize("setup", SETUPS)
-    def test_ranks_every_query_from_one(
-        self, pipeline: AnyBURL, split: ValidationSplit, setup: AggregationSetup
-    ) -> None:
-        evaluator = _evaluator(pipeline, split, setup=setup)
-
-        ranks = evaluator.rank_queries(split.test_triples)
-
-        assert len(ranks) == 2 * len(split.test_triples)
-        assert all(query.rank >= 1.0 for query in ranks)
-
-    @pytest.mark.parametrize("setup", SETUPS)
-    def test_does_at_least_as_well_as_zero_scorer(
-        self, pipeline: AnyBURL, split: ValidationSplit, setup: AggregationSetup
-    ) -> None:
-        known = HeteroGraph(split.train_data)
-        zero = LinkPredictionEvaluator(
-            ZeroScorer(known, LIVES_IN), known, EvaluationConfig()
-        )
-
+        """Every setup recovers the fixed predictor's ranking on a learnable graph."""
         learned = _evaluator(pipeline, split, setup=setup).evaluate(split.test_triples)
 
-        assert learned.mrr >= zero.evaluate(split.test_triples).mrr
+        assert learned.num_queries == 2 * len(split.test_triples)
+        assert learned.mrr == pytest.approx(EXPECTED_MRR)
+        assert learned.hits_at_k == pytest.approx(EXPECTED_HITS)
 
     def test_same_seed_gives_same_rules_and_weights(
         self, split: ValidationSplit

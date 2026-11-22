@@ -33,6 +33,9 @@ LEGACY_GROUNDING_WEIGHTINGS: Mapping[str, str] = {
 class ConfidenceAggregation(StrEnum):
     """How the contributions of different body chains combine into a score.
 
+    ``"noisy_or"`` is also a former :class:`GroundingWeighting` value, which
+    still parses there as :attr:`GroundingWeighting.ONCE`.
+
     Attributes
     ----------
     NOISY_OR : str

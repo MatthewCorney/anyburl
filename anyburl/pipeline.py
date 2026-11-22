@@ -358,7 +358,7 @@ class AnyBURL:
             If ``fit`` has not been called or produced no rules.
         """
         return MultiRelationPredictor(
-            self._require_rules(), self.results, config=prediction
+            self._require_fitted_graph(), self.results, config=prediction
         )
 
     def fit_aggregator(
@@ -366,7 +366,7 @@ class AnyBURL:
         train_triples: Sequence[Triple],
         *,
         edge_type: EdgeTypeTuple | None = None,
-        config: AggregationSetup | None = None,
+        setup: AggregationSetup | None = None,
     ) -> AggregatedScorer:
         """Fit a learned aggregator over one relation's rules.
 
@@ -377,7 +377,7 @@ class AnyBURL:
             validation triples.
         edge_type : EdgeTypeTuple | None
             The relation to fit. ``None`` takes it from ``train_triples``.
-        config : AggregationSetup | None
+        setup : AggregationSetup | None
             Featurizer, sampling and model settings. ``None`` uses the
             defaults.
 
@@ -394,14 +394,14 @@ class AnyBURL:
             As raised by :func:`~anyburl.aggregation.fit_aggregated_scorer`.
         """
         return fit_aggregated_scorer(
-            self._require_rules(),
+            self._require_fitted_graph(),
             self.results,
             train_triples,
             edge_type=edge_type,
-            setup=config,
+            setup=setup,
         )
 
-    def _require_rules(self) -> HeteroGraph:
+    def _require_fitted_graph(self) -> HeteroGraph:
         """Return the graph, raising unless ``fit`` produced rules."""
         graph = self._require_graph()
         if not self.results:

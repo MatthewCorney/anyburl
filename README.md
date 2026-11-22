@@ -19,7 +19,9 @@ In scope:
 - Heterogeneous PyG graphs; entities are identified by `(id, node_type)`.
 - Cyclic and AC1 chain rules of any body length, plus length-one acyclic
   rules (`r(X, c) :- b(X, d)` and `r(X, c) :- b(X, A)`; opt-in through
-  `AnyBURLConfig.acyclic_samples_per_end`).
+  `AnyBURLConfig.acyclic_samples_per_end`). Here `RuleType.AC1` is a
+  constant head over an all-variable chain; the paper's AC1 and AC2 rules
+  of length one are `RuleType.ACYCLIC`.
 - Bottom-up sampling with a Numba random walk engine.
 - Fixed aggregation of rule confidences (noisy-or, maximum, lexicographic)
   and a learned aggregator fitted on held-out triples.
@@ -29,7 +31,8 @@ In scope:
 
 Out of scope:
 
-- Rules with a head variable absent from the body are not learned.
+- Rules with both head terms variable and one of them absent from the body
+  (AnyBURL's longer AC2 rules) are not learned.
 - No rule-file I/O and no interoperability with the Java AnyBURL.
 - No GPU or distributed execution; walks and grounding counts run on CPU.
 - The torch walk engine is removed; walks use Numba only.
