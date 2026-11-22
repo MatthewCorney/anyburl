@@ -12,7 +12,7 @@ The learning process follows four stages:
 2. **Walk** --- run bounded random walks from each triple's head entity,
    keeping paths that reach its tail.
 3. **Generalize** --- :class:`RuleGeneralizer` replaces the entities in each
-   path with variables, producing cyclic, AC1 and AC2 :class:`Rule` objects.
+   path with variables, producing cyclic and AC1 :class:`Rule` objects.
 4. **Evaluate** --- :class:`RuleEvaluator` computes support, confidence and
    head coverage (:class:`RuleMetrics`) by counting body-chain groundings,
    and keeps the rules passing their thresholds in a :class:`RuleSet`.

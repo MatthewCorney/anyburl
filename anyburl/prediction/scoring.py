@@ -1,5 +1,6 @@
 """How body grounding counts are weighted into a rule's contribution."""
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import assert_never
 
@@ -8,6 +9,7 @@ from torch import Tensor
 
 __all__ = [
     "GROUNDING_WEIGHT_OFFSET",
+    "LEGACY_GROUNDING_WEIGHTINGS",
     "TIE_BREAK_WEIGHT",
     "ConfidenceAggregation",
     "GroundingWeighting",
@@ -20,6 +22,12 @@ GROUNDING_WEIGHT_OFFSET: float = 1.0
 
 TIE_BREAK_WEIGHT: float = 1e-4
 """Scale of the noisy-or term that breaks ties under maximum aggregation."""
+
+LEGACY_GROUNDING_WEIGHTINGS: Mapping[str, str] = {
+    "noisy_or": "once",
+    "path_weighted": "log_count",
+}
+"""Former :class:`GroundingWeighting` values, mapped to their current ones."""
 
 
 class ConfidenceAggregation(StrEnum):
@@ -48,8 +56,8 @@ class ConfidenceAggregation(StrEnum):
 class GroundingWeighting(StrEnum):
     """How the number of body groundings reaching a candidate weights a rule.
 
-    The values keep their original names so saved configurations and the
-    benchmark command line stay valid.
+    The former values ``"noisy_or"`` and ``"path_weighted"`` still parse,
+    to :attr:`ONCE` and :attr:`LOG_COUNT`.
 
     Attributes
     ----------
@@ -62,8 +70,17 @@ class GroundingWeighting(StrEnum):
         single grounding. A single grounding reproduces :attr:`ONCE`.
     """
 
-    ONCE = "noisy_or"
-    LOG_COUNT = "path_weighted"
+    ONCE = "once"
+    LOG_COUNT = "log_count"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "GroundingWeighting | None":
+        """Return the member a former value names, or ``None``."""
+        match value:
+            case str() if value in LEGACY_GROUNDING_WEIGHTINGS:
+                return cls(LEGACY_GROUNDING_WEIGHTINGS[value])
+            case _:
+                return None
 
 
 def evidence_weights(groundings: Tensor, weighting: GroundingWeighting) -> Tensor:

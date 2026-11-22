@@ -16,7 +16,7 @@ from anyburl.rule import (
     aggregate_confidence,
 )
 from anyburl.rule_evaluation import RuleEvaluator, RuleSet
-from tests.rules import ac2_born_in, lives_in, object_grounded, subject_grounded
+from tests.rules import lives_in, object_grounded, subject_grounded
 
 PERMISSIVE = RuleConfig(min_support=1, min_confidence=0.0, min_head_coverage=0.0)
 WARNING_TEXT = "not comparable across rule types"
@@ -102,40 +102,6 @@ def test_evaluate_ac1_rule(evaluator_graph: HeteroGraph) -> None:
     assert metrics.num_predictions == 1
     assert metrics.support == 0
     assert metrics.confidence == 0.0
-
-
-@pytest.mark.parametrize(
-    "rule",
-    [
-        ac2_born_in(),
-        Rule(
-            head=lives_in(
-                Term.variable("X", node_type="person"),
-                Term.variable("Y", node_type="city"),
-            ),
-            body=(
-                Atom(
-                    relation="near",
-                    subject=Term.variable("Z0", node_type="city"),
-                    object_=Term.variable("Y", node_type="city"),
-                ),
-            ),
-            rule_type=RuleType.AC2,
-        ),
-    ],
-    ids=["subject_connected", "object_connected"],
-)
-def test_evaluate_ac2(evaluator_graph: HeteroGraph, rule: Rule) -> None:
-    """The connected side reaches every entity of its type: 4 x 3 predictions.
-
-    All 4 ``lives_in`` triples have a connected endpoint, so support is 4.
-    """
-    metrics = RuleEvaluator(evaluator_graph, PERMISSIVE).evaluate(rule)
-
-    assert metrics.num_predictions == 12
-    assert metrics.support == 4
-    assert metrics.confidence == pytest.approx(1.0 / 3.0)
-    assert metrics.head_coverage == pytest.approx(1.0)
 
 
 def test_evaluate_batch_filters(

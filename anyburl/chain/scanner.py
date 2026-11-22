@@ -122,46 +122,6 @@ class ChainScanner:
         """
         return self._scan(signature, head_edge_type, rows, self._tables)
 
-    def reachable_sources(
-        self, signature: Sequence[EdgeTypeTuple]
-    ) -> NDArray[np.bool_]:
-        """Return which source entities the chain connects to anything.
-
-        Parameters
-        ----------
-        signature : Sequence[EdgeTypeTuple]
-            Body edge types in chain order.
-
-        Returns
-        -------
-        NDArray[np.bool_]
-            One flag per entity of the chain's starting node type.
-        """
-        rows = np.arange(self._graph.node_count(signature[0][0]), dtype=np.int64)
-        predictions, _ = self._scan(signature, None, rows, self._tables)
-        return predictions > 0
-
-    def reachable_targets(
-        self, signature: Sequence[EdgeTypeTuple]
-    ) -> NDArray[np.bool_]:
-        """Return which target entities the chain connects from anything.
-
-        Parameters
-        ----------
-        signature : Sequence[EdgeTypeTuple]
-            Body edge types in forward chain order.
-
-        Returns
-        -------
-        NDArray[np.bool_]
-            One flag per entity of the chain's ending node type.
-        """
-        rows = np.arange(self._graph.node_count(signature[-1][2]), dtype=np.int64)
-        predictions, _ = self._scan(
-            self._reversed(signature), None, rows, self._reverse()
-        )
-        return predictions > 0
-
     def _reverse(self) -> CsrTables:
         """Return the reverse tables, building them on first use."""
         return reverse_csr_tables(self._graph)
@@ -176,15 +136,11 @@ class ChainScanner:
     def _scan(
         self,
         signature: Sequence[EdgeTypeTuple],
-        head_edge_type: EdgeTypeTuple | None,
+        head_edge_type: EdgeTypeTuple,
         rows: NDArray[np.int64],
         tables: CsrTables,
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
-        """Run the kernel over one direction's tables.
-
-        ``head_edge_type`` may be ``None`` when only reachability is wanted,
-        in which case the support counts come back zero.
-        """
+        """Run the kernel over one direction's tables."""
         self._validate(signature, head_edge_type)
         edge_ids = tables.edge_ids(signature)
         head_crow, head_col = self._head_arrays(head_edge_type, signature, tables)
@@ -206,9 +162,7 @@ class ChainScanner:
             np.ascontiguousarray(rows, dtype=np.int64),
             self._stamp_base,
             np.zeros(width, dtype=np.int64),
-            np.zeros(
-                self._head_marker_width(head_edge_type, signature), dtype=np.int64
-            ),
+            np.zeros(self._graph.node_count(head_edge_type[2]), dtype=np.int64),
             np.zeros((FRONTIER_SLOTS, width), dtype=np.int64),
             predictions,
             support,
@@ -227,29 +181,19 @@ class ChainScanner:
         widths.append(self._graph.node_count(source_type))
         return max(widths)
 
-    def _head_marker_width(
-        self,
-        head_edge_type: EdgeTypeTuple | None,
-        signature: Sequence[EdgeTypeTuple],
-    ) -> int:
-        """Return the size of the head-marker scratch for this scan."""
-        if head_edge_type is None:
-            return self._graph.node_count(signature[-1][2])
-        return self._graph.node_count(head_edge_type[2])
-
     def _head_arrays(
         self,
-        head_edge_type: EdgeTypeTuple | None,
+        head_edge_type: EdgeTypeTuple,
         signature: Sequence[EdgeTypeTuple],
         tables: CsrTables,
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Return the head relation's CSR arrays, padded when it has no edges.
 
         The kernel indexes the row-offset array by every scanned row and does
-        no bounds checking, so when there is no head relation, or it has no
-        edges, an all-zero array spanning every source row is returned.
+        no bounds checking, so when the head relation has no edges, an
+        all-zero array spanning every source row is returned.
         """
-        if head_edge_type is None or head_edge_type not in tables.edge_type_to_id:
+        if head_edge_type not in tables.edge_type_to_id:
             source_rows = self._graph.node_count(signature[0][0])
             return (
                 np.zeros(source_rows + 1, dtype=np.int64),
@@ -267,7 +211,7 @@ class ChainScanner:
     @staticmethod
     def _validate(
         signature: Sequence[EdgeTypeTuple],
-        head_edge_type: EdgeTypeTuple | None,
+        head_edge_type: EdgeTypeTuple,
     ) -> None:
         """Reject chains that cannot be walked or compared against the head.
 
@@ -278,8 +222,6 @@ class ChainScanner:
             disagree with the head relation's.
         """
         validate_chain(signature)
-        if head_edge_type is None:
-            return
         if signature[0][0] != head_edge_type[0]:
             raise InvalidRuleError(
                 f"chain starts at {signature[0][0]!r} but head "

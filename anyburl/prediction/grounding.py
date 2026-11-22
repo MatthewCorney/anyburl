@@ -15,9 +15,6 @@ __all__ = ["ChainGrounding", "body_chain_key", "build_groundings"]
 
 logger = get_logger(__name__)
 
-CHAINLESS_RULE_TYPES: frozenset[RuleType] = frozenset({RuleType.AC2, RuleType.ACYCLIC})
-"""Rule types scored without a body-chain grounding."""
-
 
 @dataclass(frozen=True, slots=True)
 class ChainGrounding:
@@ -52,10 +49,7 @@ def build_groundings(
     graph: HeteroGraph,
     results: RuleSet,
 ) -> dict[BodyChain, ChainGrounding]:
-    """Build one grounding per distinct body chain, skipping AC2 rules.
-
-    AC2 rules predict a Cartesian product, so they contribute no
-    per-candidate evidence.
+    """Build one grounding per distinct body chain, skipping acyclic rules.
 
     Parameters
     ----------
@@ -80,7 +74,7 @@ def build_groundings(
         for key in dict.fromkeys(
             body_chain_key(rule)
             for rule, _ in results
-            if rule.rule_type not in CHAINLESS_RULE_TYPES
+            if rule.rule_type is not RuleType.ACYCLIC
         )
     }
     for key in groundings:

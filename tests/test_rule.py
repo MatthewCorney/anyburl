@@ -12,12 +12,14 @@ from anyburl.rule import (
     RuleType,
     Term,
     TermKind,
+    classify_rule,
 )
 
 X_PERSON = Term.variable("X", node_type="person")
 Y_CITY = Term.variable("Y", node_type="city")
 Z0_CITY = Term.variable("Z0", node_type="city")
 PERSON_0 = Term.constant(0, node_type="person")
+CITY_1 = Term.constant(1, node_type="city")
 
 
 def _atom(relation: str, subject: Term, object_: Term) -> Atom:
@@ -156,7 +158,7 @@ def test_rule_str_contains_key_parts() -> None:
         Atom(
             relation="born_in",
             subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
+            object_=Term.variable("Y", node_type="city"),
         ),
     )
     rule = Rule(head=head, body=body, rule_type=RuleType.CYCLIC)
@@ -200,12 +202,65 @@ def test_rule_config_valid() -> None:
             (_atom("born_in", X_PERSON, Y_CITY),),
             RuleType.AC1,
         ),
-        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), RuleType.AC2),
+        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), None),
     ],
-    ids=["cyclic", "ac1", "ac2"],
+    ids=["cyclic", "ac1", "head_variable_unbound"],
 )
-def test_classify_rule(head: Atom, body: tuple[Atom, ...], expected: RuleType) -> None:
-    assert RuleGeneralizer.classify_rule(head, body) is expected
+def test_classify_rule(
+    head: Atom, body: tuple[Atom, ...], expected: RuleType | None
+) -> None:
+    assert classify_rule(head, body) is expected
+
+
+@pytest.mark.parametrize(
+    ("head", "body", "rule_type"),
+    [
+        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Y_CITY),), RuleType.ACYCLIC),
+        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Y_CITY),), RuleType.AC1),
+        (
+            _atom("lives_in", X_PERSON, CITY_1),
+            (_atom("born_in", X_PERSON, Z0_CITY), _atom("near", Z0_CITY, Y_CITY)),
+            RuleType.ACYCLIC,
+        ),
+        (
+            _atom("lives_in", X_PERSON, CITY_1),
+            (_atom("born_in", X_PERSON, CITY_1),),
+            RuleType.AC1,
+        ),
+        (
+            _atom("lives_in", X_PERSON, CITY_1),
+            (_atom("born_in", X_PERSON, Y_CITY),),
+            RuleType.CYCLIC,
+        ),
+        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), RuleType.CYCLIC),
+        (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), RuleType.AC1),
+    ],
+    ids=[
+        "cyclic_as_acyclic",
+        "cyclic_as_ac1",
+        "acyclic_with_two_atoms",
+        "body_constant_as_ac1",
+        "ac1_as_cyclic",
+        "unbound_head_variable_as_cyclic",
+        "unbound_head_variable_as_ac1",
+    ],
+)
+def test_rule_rejects_type_inconsistent_with_structure(
+    head: Atom, body: tuple[Atom, ...], rule_type: RuleType
+) -> None:
+    with pytest.raises(InvalidRuleError, match="does not have the structure"):
+        Rule(head=head, body=body, rule_type=rule_type)
+
+
+@pytest.mark.parametrize("end", [CITY_1, Y_CITY], ids=["constant_end", "variable_end"])
+def test_single_atom_constant_head_rule_may_be_acyclic(end: Term) -> None:
+    head = _atom("lives_in", X_PERSON, CITY_1)
+
+    rule = Rule(
+        head=head, body=(_atom("born_in", X_PERSON, end),), rule_type=RuleType.ACYCLIC
+    )
+
+    assert rule.rule_type is RuleType.ACYCLIC
 
 
 def test_generalize_empty_path_raises() -> None:
@@ -335,8 +390,8 @@ def test_paths_differing_only_by_revisit_generalize_identically() -> None:
     assert generalize(revisiting) == generalize(distinct)
 
 
-def test_walk_returning_to_head_still_yields_ac2() -> None:
-    """A tail equal to the head binds the last position to X, giving AC2."""
+def test_walk_returning_to_head_yields_no_cyclic_rule() -> None:
+    """A tail equal to the head leaves ``Y`` out of the body, so only AC1."""
     generalizer = RuleGeneralizer()
     path = [(0, "person", "knows"), (3, "person", "knows"), (0, "person", "")]
 
@@ -347,7 +402,7 @@ def test_walk_returning_to_head_still_yields_ac2() -> None:
         tail_type="person",
     )
 
-    assert RuleType.AC2 in {r.rule_type for r in rules}
+    assert [r.rule_type for r in rules] == [RuleType.AC1, RuleType.AC1]
 
 
 def test_thresholds_default_to_the_config_wide_floors() -> None:

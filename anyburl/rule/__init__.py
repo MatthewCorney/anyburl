@@ -8,7 +8,7 @@ from .config import (
     RuleThresholds,
 )
 from .generalizer import RuleGeneralizer
-from .model import Atom, PathStep, Rule, RuleType, Term, TermKind
+from .model import Atom, PathStep, Rule, RuleType, Term, TermKind, classify_rule
 from .quality import NO_PREDICTIONS, RuleMetrics, aggregate_confidence
 
 __all__ = [
@@ -27,4 +27,5 @@ __all__ = [
     "Term",
     "TermKind",
     "aggregate_confidence",
+    "classify_rule",
 ]

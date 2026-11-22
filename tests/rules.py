@@ -51,14 +51,6 @@ def object_grounded(city_id: int) -> Rule:
     return Rule(head=head, body=BORN_IN_NEAR_BODY, rule_type=RuleType.AC1)
 
 
-def ac2_born_in() -> Rule:
-    """Return ``lives_in(X, Y) :- born_in(X, Z0)``, where ``Y`` is unbound."""
-    head = lives_in(
-        Term.variable("X", node_type="person"), Term.variable("Y", node_type="city")
-    )
-    return Rule(head=head, body=BORN_IN_NEAR_BODY[:1], rule_type=RuleType.AC2)
-
-
 def metrics_with(confidence: float) -> RuleMetrics:
     """Return metrics whose only meaningful field is ``confidence``."""
     return RuleMetrics(

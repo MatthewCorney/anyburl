@@ -123,7 +123,7 @@ def build_chain_sides(
     Parameters
     ----------
     results : RuleSet
-        Rules with their metrics. AC2 and acyclic rules are ignored.
+        Rules with their metrics. Acyclic rules are ignored.
     groundings : Mapping[BodyChain, ChainGrounding]
         Grounding per body chain.
     unseen_negatives : int
@@ -190,7 +190,7 @@ def _collect_confidences(results: RuleSet, unseen_negatives: int) -> _ChainConfi
                     grounded, term = collected.object_grounded, head.object_
                 if term.entity_id is not None:
                     grounded[key][term.entity_id].append(confidence)
-            case RuleType.AC2 | RuleType.ACYCLIC:
+            case RuleType.ACYCLIC:
                 continue
             case _ as unreachable:
                 assert_never(unreachable)

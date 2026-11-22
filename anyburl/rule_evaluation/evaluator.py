@@ -72,8 +72,6 @@ class RuleEvaluator:
                 return self._evaluate_cyclic(rule)
             case RuleType.AC1:
                 return self._evaluate_ac1(rule)
-            case RuleType.AC2:
-                return self._evaluate_ac2(rule)
             case RuleType.ACYCLIC:
                 return self._evaluate_acyclic(rule)
             case _ as unreachable:
@@ -265,39 +263,6 @@ class RuleEvaluator:
             [rule], is_subject_grounded=_is_subject_grounded(rule), out=out
         )
         return out[rule]
-
-    def _evaluate_ac2(self, rule: Rule) -> RuleMetrics:
-        """Evaluate an AC2 rule, where one head variable is absent from the body.
-
-        Predictions are every reachable binding of the connected head
-        variable paired with every entity of the disconnected one's type.
-        """
-        head = rule.head
-        body_variables = frozenset().union(*(atom.variable_names for atom in rule.body))
-        is_subject_connected = head.subject.name in body_variables
-        if is_subject_connected == (head.object_.name in body_variables):
-            logger.debug("AC2 rule has unexpected variable structure: %s", rule)
-            return NO_PREDICTIONS
-
-        signature = self._body_signature(rule)
-        head_et = self._edge_type_of(head)
-        head_sources, head_targets = self._graph.edge_index(head_et)
-        if is_subject_connected:
-            connected = self._scanner.reachable_sources(signature)
-            known_connected = head_sources
-            disconnected_type = head.object_.node_type
-        else:
-            connected = self._scanner.reachable_targets(signature)
-            known_connected = head_targets
-            disconnected_type = head.subject.node_type
-
-        num_predictions = int(connected.sum()) * self._graph.node_count(
-            disconnected_type
-        )
-        support = int(connected[known_connected.numpy()].sum())
-        return metrics_from_counts(
-            num_predictions, support, self._graph.edge_count(head_et)
-        )
 
     def _evaluate_acyclic(self, rule: Rule) -> RuleMetrics:
         """Evaluate an acyclic rule from its single body atom."""

@@ -6,7 +6,17 @@ from typing import assert_never
 
 from ..exceptions import InvalidRuleError
 
-__all__ = ["Atom", "PathStep", "Rule", "RuleType", "Term", "TermKind"]
+__all__ = [
+    "Atom",
+    "PathStep",
+    "Rule",
+    "RuleType",
+    "Term",
+    "TermKind",
+    "classify_rule",
+]
+
+ACYCLIC_BODY_LENGTH: int = 1
 
 PathStep = tuple[int, str, str]
 """One walk step: ``(entity_id, node_type, relation_to_next_entity)``.
@@ -18,26 +28,26 @@ The final step of a path holds the tail entity and an empty relation.
 class RuleType(StrEnum):
     """Classification of learned Horn rules by structural type.
 
+    ``AC1`` and ``CYCLIC`` rules have all-variable body chains of any length.
+    ``ACYCLIC`` covers AnyBURL's AC1 and AC2 rules, which have one body atom.
+    Rules with a head variable absent from the body are not learned.
+
     Attributes
     ----------
     AC1 : str
-        Acyclic rule with one free variable. One head variable is grounded
-        as a constant; the other appears in the body.
-    AC2 : str
-        Acyclic rule with two free variables. One head variable does not
-        appear in the body at all.
+        One head term is a constant; the other is a variable. The body is a
+        chain of variables, as in ``r(X, c) :- b1(X, Z0), b2(Z0, Y)``.
     CYCLIC : str
-        Cyclic rule. Both head variables appear in the body, forming a
-        closed variable chain.
+        Both head variables appear in the body, closing the chain, as in
+        ``r(X, Y) :- b1(X, Z0), b2(Z0, Y)``.
     ACYCLIC : str
         One head term is a constant and the body is a single atom leaving
-        the free head variable, ending at a constant (``r(X, c) :- b(X, d)``)
-        or at an unbound variable (``r(X, c) :- b(X, A)``). AnyBURL's AC1
-        and AC2 rules of length one.
+        the free head variable, ending at a constant (``r(X, c) :- b(X, d)``,
+        AnyBURL's AC1) or at an unbound variable (``r(X, c) :- b(X, A)``,
+        AnyBURL's AC2).
     """
 
     AC1 = "ac1"
-    AC2 = "ac2"
     CYCLIC = "cyclic"
     ACYCLIC = "acyclic"
 
@@ -202,6 +212,55 @@ class Atom:
         return f"{src_type}_{self.relation}_{dst_type}({self.subject}, {self.object_})"
 
 
+def classify_rule(head: Atom, body: tuple[Atom, ...]) -> RuleType | None:
+    """Return the chain-rule type of ``head :- body``.
+
+    Parameters
+    ----------
+    head : Atom
+        The rule head atom.
+    body : tuple[Atom, ...]
+        The rule body atoms.
+
+    Returns
+    -------
+    RuleType | None
+        AC1 if a head term is a constant, CYCLIC if both head variables
+        appear in the body, ``None`` if a head variable is absent from it.
+    """
+    if TermKind.CONSTANT in (head.subject.kind, head.object_.kind):
+        return RuleType.AC1
+
+    body_variables = frozenset().union(*(atom.variable_names for atom in body))
+    if head.variable_names <= body_variables:
+        return RuleType.CYCLIC
+    return None
+
+
+def _admissible_rule_types(head: Atom, body: tuple[Atom, ...]) -> frozenset[RuleType]:
+    """Return the rule types the structure ``head :- body`` admits.
+
+    A single-atom AC1 structure may also be an acyclic rule, the only kind
+    whose body holds constants.
+    """
+    chain_type = classify_rule(head, body)
+    is_single_atom = len(body) == ACYCLIC_BODY_LENGTH
+    has_body_constant = any(
+        TermKind.CONSTANT in (atom.subject.kind, atom.object_.kind) for atom in body
+    )
+    match chain_type:
+        case RuleType.AC1 if is_single_atom and has_body_constant:
+            return frozenset({RuleType.ACYCLIC})
+        case RuleType.AC1 if is_single_atom:
+            return frozenset({RuleType.AC1, RuleType.ACYCLIC})
+        case None:
+            return frozenset()
+        case _ if has_body_constant:
+            return frozenset()
+        case _:
+            return frozenset({chain_type})
+
+
 @dataclass(frozen=True, slots=True)
 class Rule:
     """A Horn rule learned from the knowledge graph.
@@ -219,12 +278,25 @@ class Rule:
     body : tuple[Atom, ...]
         The antecedent atoms (conjunctive conditions).
     rule_type : RuleType
-        The structural classification (AC1, AC2, CYCLIC or ACYCLIC).
+        The structural classification (AC1, CYCLIC or ACYCLIC).
+
+    Raises
+    ------
+    InvalidRuleError
+        If ``rule_type`` does not match the rule's structure.
     """
 
     head: Atom
     body: tuple[Atom, ...]
     rule_type: RuleType
+
+    def __post_init__(self) -> None:
+        """Reject a rule type the head and body do not admit."""
+        if self.rule_type not in _admissible_rule_types(self.head, self.body):
+            raise InvalidRuleError(
+                f"Rule {self} does not have the structure of a "
+                f"{self.rule_type.value} rule"
+            )
 
     @property
     def length(self) -> int:

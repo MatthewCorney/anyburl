@@ -30,7 +30,7 @@ class RulePredictor:
     Contributions are weighted by the configured :class:`GroundingWeighting`
     and combined per :class:`ConfidenceAggregation`. Acyclic rules fire
     individually and combine the same way, but are left out of
-    :meth:`explain`. AC2 rules are ignored.
+    :meth:`explain`.
 
     Parameters
     ----------

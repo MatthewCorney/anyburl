@@ -26,9 +26,9 @@ from anyburl.rule.quality import corrected_confidence
 from anyburl.rule_evaluation import RuleSet
 from tests import adjacency
 from tests.rules import (
-    ac2_born_in,
     cyclic_born_in_near,
     metrics_with,
+    object_constant_rule,
     object_grounded,
     subject_grounded,
 )
@@ -186,31 +186,6 @@ def test_score_heads_cyclic(evaluator_graph: HeteroGraph, cyclic_rule: Rule) -> 
 def test_empty_results_raises(evaluator_graph: HeteroGraph) -> None:
     with pytest.raises(ConfigurationError, match="results must not be empty"):
         RulePredictor(evaluator_graph, RuleSet.of([]))
-
-
-def test_ac2_rules_are_skipped(
-    evaluator_graph: HeteroGraph,
-    cyclic_rule: Rule,
-) -> None:
-    """AC2 rules are included in results but produce no predictions."""
-    ac2 = ac2_born_in()
-    results = RuleSet.of(
-        [
-            (cyclic_rule, metrics_with(confidence=0.25)),
-            (ac2, metrics_with(confidence=0.1)),
-        ]
-    )
-    predictor = RulePredictor(evaluator_graph, results)
-    predictions = predictor.predict()
-
-    cyclic_only = RulePredictor(
-        evaluator_graph, RuleSet.of([(cyclic_rule, metrics_with(confidence=0.25))])
-    )
-    expected = cyclic_only.predict()
-
-    assert {(p.head_id, p.tail_id) for p in predictions} == {
-        (p.head_id, p.tail_id) for p in expected
-    }
 
 
 def test_predict_before_fit_raises() -> None:
@@ -635,9 +610,10 @@ def test_chain_evidence_reports_grounding_counts(
 def test_chain_evidence_is_empty_without_scoring_rules(
     evaluator_graph: HeteroGraph,
 ) -> None:
-    """AC2 rules are ignored, which can leave no chains at all."""
+    """Acyclic rules are ignored, which can leave no chains at all."""
     predictor = RulePredictor(
-        evaluator_graph, RuleSet.of([(ac2_born_in(), metrics_with(0.5))])
+        evaluator_graph,
+        RuleSet.of([(object_constant_rule(0, None), metrics_with(0.5))]),
     )
 
     evidence = predictor.evidence.chain_evidence(QueryDirection.TAIL, 0)

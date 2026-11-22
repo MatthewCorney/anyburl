@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..exceptions import InvalidRuleError
-from .model import Atom, PathStep, Rule, RuleType, Term, TermKind
+from .model import Atom, PathStep, Rule, RuleType, Term, classify_rule
 
 __all__ = ["RuleGeneralizer"]
 
@@ -27,8 +27,8 @@ class RuleGeneralizer:
     """Generalizes concrete walk paths into variable-based Horn rules.
 
     Given a path (a sequence of concrete entity-relation steps), the
-    generalizer replaces entities with variables to produce AC1, AC2,
-    and cyclic rules.
+    generalizer replaces entities with variables to produce AC1 and cyclic
+    rules.
     """
 
     def generalize(
@@ -41,9 +41,9 @@ class RuleGeneralizer:
     ) -> Sequence[Rule]:
         """Generalize a walk path into one or more Horn rules.
 
-        A single path can produce multiple rules of different types
-        (cyclic, AC1, AC2). The path represents a walk from the head
-        entity to the tail entity of a target triple.
+        A single path can produce a cyclic rule and two AC1 rules. The path
+        represents a walk from the head entity to the tail entity of a
+        target triple.
 
         Parameters
         ----------
@@ -79,42 +79,13 @@ class RuleGeneralizer:
             head_type=head_type,
             tail_type=tail_type,
         )
-        rules: list[Rule] = []
-
-        rules.append(self._create_cyclic_rule(path, ctx))
-
-        for ground_subject in (True, False):
-            rules.append(
-                self._create_ac1_rule(path, ctx, ground_subject=ground_subject)
-            )
-
+        cyclic = self._create_cyclic_rule(path, ctx)
+        rules = [] if cyclic is None else [cyclic]
+        rules.extend(
+            self._create_ac1_rule(path, ctx, ground_subject=ground_subject)
+            for ground_subject in (True, False)
+        )
         return [r for r in rules if not r.is_tautological]
-
-    @staticmethod
-    def classify_rule(head: Atom, body: tuple[Atom, ...]) -> RuleType:
-        """Determine the structural type of a rule.
-
-        Parameters
-        ----------
-        head : Atom
-            The rule head atom.
-        body : tuple[Atom, ...]
-            The rule body atoms.
-
-        Returns
-        -------
-        RuleType
-            AC1 if one head term is a constant, AC2 if a head variable
-            is absent from the body, CYCLIC if both head variables
-            appear in the body.
-        """
-        if TermKind.CONSTANT in (head.subject.kind, head.object_.kind):
-            return RuleType.AC1
-
-        body_variables = frozenset().union(*(atom.variable_names for atom in body))
-        if head.variable_names <= body_variables:
-            return RuleType.CYCLIC
-        return RuleType.AC2
 
     def _assign_variables(
         self,
@@ -162,12 +133,11 @@ class RuleGeneralizer:
         self,
         path: Sequence[PathStep],
         ctx: _GeneralizationContext,
-    ) -> Rule:
-        """Create a fully-variable-head rule from the walk path.
+    ) -> Rule | None:
+        """Create a cyclic rule from the walk path.
 
-        The rule is ``CYCLIC`` when both head variables appear in the body,
-        and ``AC2`` when the walk returns to its head entity, leaving ``Y``
-        absent from the body.
+        A walk that returns to its head entity leaves ``Y`` absent from the
+        body, which no rule type admits.
 
         Parameters
         ----------
@@ -178,9 +148,8 @@ class RuleGeneralizer:
 
         Returns
         -------
-        Rule
-            A rule with variable head; type determined by
-            :meth:`classify_rule`.
+        Rule | None
+            The cyclic rule, or ``None`` when ``Y`` is absent from the body.
         """
         head_atom = Atom(
             relation=ctx.target_relation,
@@ -189,9 +158,9 @@ class RuleGeneralizer:
         )
 
         body = self._build_body_atoms(path, ctx)
-        rule_type = self.classify_rule(head_atom, body)
-
-        return Rule(head=head_atom, body=body, rule_type=rule_type)
+        if classify_rule(head_atom, body) is not RuleType.CYCLIC:
+            return None
+        return Rule(head=head_atom, body=body, rule_type=RuleType.CYCLIC)
 
     def _create_ac1_rule(
         self,
@@ -234,9 +203,7 @@ class RuleGeneralizer:
         )
 
         body = self._build_body_atoms(path, ctx)
-        rule_type = self.classify_rule(head_atom, body)
-
-        return Rule(head=head_atom, body=body, rule_type=rule_type)
+        return Rule(head=head_atom, body=body, rule_type=RuleType.AC1)
 
     def _build_body_atoms(
         self,

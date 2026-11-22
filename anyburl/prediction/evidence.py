@@ -53,7 +53,7 @@ class RuleEvidence:
     Rules sharing a body chain share one grounding. Scorers such as
     :class:`~anyburl.prediction.RulePredictor` and
     :class:`~anyburl.aggregation.AggregatedScorer` combine this evidence into
-    a ranking. AC2 rules are ignored.
+    a ranking.
 
     The most recent query's firings, chain evidence and reached candidates
     are kept, so several scorers ranking the same query ground it once.
