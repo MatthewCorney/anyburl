@@ -225,16 +225,15 @@ def classify_rule(head: Atom, body: tuple[Atom, ...]) -> RuleType | None:
     Returns
     -------
     RuleType | None
-        AC1 if a head term is a constant, CYCLIC if both head variables
-        appear in the body, ``None`` if a head variable is absent from it.
+        ``None`` if a head variable is absent from the body; otherwise AC1
+        if a head term is a constant and CYCLIC if not.
     """
+    body_variables = frozenset().union(*(atom.variable_names for atom in body))
+    if not head.variable_names <= body_variables:
+        return None
     if TermKind.CONSTANT in (head.subject.kind, head.object_.kind):
         return RuleType.AC1
-
-    body_variables = frozenset().union(*(atom.variable_names for atom in body))
-    if head.variable_names <= body_variables:
-        return RuleType.CYCLIC
-    return None
+    return RuleType.CYCLIC
 
 
 def _admissible_rule_types(head: Atom, body: tuple[Atom, ...]) -> frozenset[RuleType]:
@@ -312,12 +311,21 @@ class Rule:
 
     @property
     def is_tautological(self) -> bool:
-        """Return whether a body atom is identical to the head atom.
+        """Return whether the rule can only predict edges its body matches.
 
-        ``p(X, Y) :- p(X, Y)`` is tautological; ``p(X, Y) :- p(X, Z0)`` is
-        not, because its body uses different variables.
+        ``p(X, Y) :- p(X, Y)`` repeats its head in its body, while
+        ``p(X, Y) :- p(X, Z0)`` does not. An AC1 rule is grounded from its
+        constant along its body's edge types, so ``p(c, Y) :- p(X, Y)``
+        predicts exactly the known ``p`` edges of ``c`` and is tautological
+        too.
         """
-        return any(atom == self.head for atom in self.body)
+        if any(atom == self.head for atom in self.body):
+            return True
+        return (
+            self.rule_type is RuleType.AC1
+            and self.length == ACYCLIC_BODY_LENGTH
+            and self.body[0].edge_signature == self.head.edge_signature
+        )
 
     @property
     def constants(self) -> frozenset[tuple[int, str]]:

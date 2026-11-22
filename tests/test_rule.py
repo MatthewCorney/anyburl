@@ -104,7 +104,7 @@ def test_rule_constants() -> None:
         Atom(
             relation="born_in",
             subject=Term.variable("X", node_type="person"),
-            object_=Term.variable("Z0", node_type="city"),
+            object_=Term.variable("Y", node_type="city"),
         ),
     )
     rule = Rule(head=head, body=body, rule_type=RuleType.AC1)
@@ -159,8 +159,9 @@ def test_rule_config_invalid(kwargs: dict[str, float], match: str) -> None:
             RuleType.AC1,
         ),
         (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), None),
+        (_atom("lives_in", X_PERSON, CITY_1), (_atom("near", Z0_CITY, Y_CITY),), None),
     ],
-    ids=["cyclic", "ac1", "head_variable_unbound"],
+    ids=["cyclic", "ac1", "head_variable_unbound", "constant_head_disconnected"],
 )
 def test_classify_rule(
     head: Atom, body: tuple[Atom, ...], expected: RuleType | None
@@ -190,6 +191,11 @@ def test_classify_rule(
         ),
         (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), RuleType.CYCLIC),
         (LIVES_IN_XY, (_atom("born_in", X_PERSON, Z0_CITY),), RuleType.AC1),
+        (
+            _atom("lives_in", X_PERSON, CITY_1),
+            (_atom("near", Z0_CITY, Y_CITY),),
+            RuleType.AC1,
+        ),
     ],
     ids=[
         "cyclic_as_acyclic",
@@ -199,6 +205,7 @@ def test_classify_rule(
         "ac1_as_cyclic",
         "unbound_head_variable_as_cyclic",
         "unbound_head_variable_as_ac1",
+        "disconnected_body_as_ac1",
     ],
 )
 def test_rule_rejects_type_inconsistent_with_structure(
@@ -243,7 +250,7 @@ def test_generalize_2step_path_produces_three_rules() -> None:
 
 
 def test_generalize_1step_same_relation_filters_tautological() -> None:
-    """1-step path with target relation yields a tautological cyclic rule, filtered."""
+    """A walk along the target edge itself only yields tautologies."""
     generalizer = RuleGeneralizer()
     path = [(0, "person", "lives_in"), (1, "city", "")]
 
@@ -254,8 +261,7 @@ def test_generalize_1step_same_relation_filters_tautological() -> None:
         tail_type="city",
     )
 
-    assert all(r.rule_type == RuleType.AC1 for r in rules)
-    assert len(rules) == 2
+    assert rules == []
 
 
 @pytest.mark.parametrize(
@@ -270,6 +276,45 @@ def test_generalize_1step_same_relation_filters_tautological() -> None:
 )
 def test_is_tautological(body: tuple[Atom, ...], expected: bool) -> None:
     rule = Rule(head=LIVES_IN_XY, body=body, rule_type=RuleType.CYCLIC)
+
+    assert rule.is_tautological is expected
+
+
+@pytest.mark.parametrize(
+    ("head", "body", "rule_type", "expected"),
+    [
+        (
+            _atom("lives_in", PERSON_0, Y_CITY),
+            (_atom("lives_in", X_PERSON, Y_CITY),),
+            RuleType.AC1,
+            True,
+        ),
+        (
+            _atom("lives_in", X_PERSON, CITY_1),
+            (_atom("lives_in", X_PERSON, Y_CITY),),
+            RuleType.AC1,
+            True,
+        ),
+        (
+            _atom("lives_in", PERSON_0, Y_CITY),
+            (_atom("born_in", X_PERSON, Y_CITY),),
+            RuleType.AC1,
+            False,
+        ),
+        (
+            _atom("lives_in", X_PERSON, CITY_1),
+            (_atom("lives_in", X_PERSON, Z0_CITY),),
+            RuleType.ACYCLIC,
+            False,
+        ),
+    ],
+    ids=["subject_grounded", "object_grounded", "other_relation", "acyclic_prior"],
+)
+def test_constant_head_rules_over_the_head_relation_are_tautological(
+    head: Atom, body: tuple[Atom, ...], rule_type: RuleType, expected: bool
+) -> None:
+    """An AC1 rule grounded along its own head edge only predicts known edges."""
+    rule = Rule(head=head, body=body, rule_type=rule_type)
 
     assert rule.is_tautological is expected
 
@@ -359,6 +404,7 @@ def test_walk_returning_to_head_yields_no_cyclic_rule() -> None:
     )
 
     assert [r.rule_type for r in rules] == [RuleType.AC1, RuleType.AC1]
+    assert all(rule.body[-1].object_.name == "Y" for rule in rules)
 
 
 def test_thresholds_default_to_the_config_wide_floors() -> None:

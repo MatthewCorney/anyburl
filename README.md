@@ -31,8 +31,9 @@ In scope:
 
 Out of scope:
 
-- Rules with both head terms variable and one of them absent from the body
-  (AnyBURL's longer AC2 rules) are not learned.
+- Rules with a head variable absent from the body (AnyBURL's longer AC2
+  rules) are not learned, nor are AC1 rules whose single body atom repeats
+  the head relation, which can only predict known edges.
 - No rule-file I/O and no interoperability with the Java AnyBURL.
 - No GPU or distributed execution; walks and grounding counts run on CPU.
 - The torch walk engine is removed; walks use Numba only.

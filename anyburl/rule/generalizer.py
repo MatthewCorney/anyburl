@@ -1,7 +1,7 @@
 """Generalization of concrete walk paths into Horn rules."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..exceptions import InvalidRuleError
 from .model import Atom, PathStep, Rule, RuleType, Term, classify_rule
@@ -202,7 +202,7 @@ class RuleGeneralizer:
             object_=object_,
         )
 
-        body = self._build_body_atoms(path, ctx)
+        body = self._build_body_atoms(path, _ending_at_object(ctx, len(path)))
         return Rule(head=head_atom, body=body, rule_type=RuleType.AC1)
 
     def _build_body_atoms(
@@ -243,3 +243,19 @@ class RuleGeneralizer:
             atoms.append(atom)
 
         return tuple(atoms)
+
+
+def _ending_at_object(
+    ctx: _GeneralizationContext, path_length: int
+) -> _GeneralizationContext:
+    """Return ``ctx`` with the walk's last position named ``Y``.
+
+    An AC1 body is grounded from the head constant along its edge types, so
+    its last variable stands for the free head end even when the walk
+    returned to its head entity.
+    """
+    last_position = path_length - 1
+    if last_position == 0:
+        return ctx
+    variable_map = {**ctx.variable_map, last_position: OBJECT_VARIABLE}
+    return replace(ctx, variable_map=variable_map)
