@@ -1,7 +1,10 @@
 """Rank candidates by their sorted rule contributions, compared position by position."""
 
+import numpy as np
 import torch
 from torch import Tensor
+
+from ._lexicographic_kernel import fill_top_contributions
 
 __all__ = ["LEXICOGRAPHIC_DEPTH", "lexicographic_scores"]
 
@@ -45,51 +48,45 @@ def lexicographic_scores(
     Tensor
         ``(num_candidates,)`` float64 scores; zero where nothing contributes.
     """
-    scores = torch.zeros(num_candidates, dtype=torch.float64)
-    is_positive = values > 0
-    candidates, values = candidates[is_positive], values[is_positive]
-    if candidates.numel() == 0:
-        return scores
-    reached, table = _top_contributions(candidates, values, depth)
-    _, order = torch.unique(table, dim=0, return_inverse=True)
-    best = table[:, 0].to(torch.float64)
-    scores[reached] = best + _tie_offsets(best, order)
-    return scores
+    scores = np.zeros(num_candidates, dtype=np.float64)
+    table = np.zeros((num_candidates, depth), dtype=values.numpy().dtype)
+    filled = np.zeros(num_candidates, dtype=np.int64)
+    fill_top_contributions(candidates.numpy(), values.numpy(), table, filled)
+    reached = np.flatnonzero(filled)
+    if reached.size == 0:
+        return torch.from_numpy(scores)
+    order, dense = _lexicographic_order(table[reached])
+    best = table[reached[order], 0].astype(np.float64)
+    scores[reached[order]] = best + _tie_offsets(best, dense)
+    return torch.from_numpy(scores)
 
 
-def _top_contributions(
-    candidates: Tensor, values: Tensor, depth: int
-) -> tuple[Tensor, Tensor]:
-    """Return the reached candidates and their strongest values, descending."""
-    by_value = torch.argsort(values, descending=True, stable=True)
-    candidates, values = candidates[by_value], values[by_value]
-    by_candidate = torch.argsort(candidates, stable=True)
-    candidates, values = candidates[by_candidate], values[by_candidate]
-    reached, local = torch.unique(candidates, return_inverse=True)
-    counts = torch.bincount(local, minlength=reached.numel())
-    starts = torch.cumsum(counts, dim=0) - counts
-    positions = torch.arange(candidates.numel()) - starts[local]
-    is_kept = positions < depth
-    table = torch.zeros(reached.numel(), depth, dtype=values.dtype)
-    table[local[is_kept], positions[is_kept]] = values[is_kept]
-    return reached, table
+def _lexicographic_order(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the ascending lexicographic order of rows and their dense ranks."""
+    order = np.lexsort(rows.T[::-1])
+    ordered = rows[order]
+    is_new = np.empty(order.size, dtype=bool)
+    is_new[0] = False
+    np.any(ordered[1:] != ordered[:-1], axis=1, out=is_new[1:])
+    return order, np.cumsum(is_new)
 
 
-def _tie_offsets(best: Tensor, order: Tensor) -> Tensor:
-    """Spread each strongest-value group by its lexicographic order.
+def _tie_offsets(best: np.ndarray, dense: np.ndarray) -> np.ndarray:
+    """Spread each strongest-value group by its lexicographic rank.
 
-    Rows sharing a strongest value occupy a contiguous run of ``order``, so
-    each row's offset is its place in that run, scaled into the gap below
-    the next stronger value.
+    ``best`` and ``dense`` are in lexicographic order, so each group of
+    equal strongest values is a contiguous run. A row's offset is its rank
+    within that run, scaled into the gap below the next stronger value.
     """
-    distinct, group = torch.unique(best, return_inverse=True)
-    top_gap = torch.tensor([TOP_GAP], dtype=distinct.dtype)
-    gaps = torch.cat([distinct[1:] - distinct[:-1], top_gap])
-    num_groups = distinct.numel()
-    lowest = torch.full((num_groups,), order.numel(), dtype=order.dtype)
-    lowest.scatter_reduce_(0, group, order, "amin")
-    highest = torch.zeros(num_groups, dtype=order.dtype)
-    highest.scatter_reduce_(0, group, order, "amax")
-    place = (order - lowest[group]).to(torch.float64)
-    span = (highest - lowest + 1)[group].to(torch.float64)
-    return place / span * OFFSET_SHARE * gaps[group]
+    starts_group = np.empty(best.size, dtype=bool)
+    starts_group[0] = True
+    np.not_equal(best[1:], best[:-1], out=starts_group[1:])
+    starts = np.flatnonzero(starts_group)
+    group = np.cumsum(starts_group) - 1
+    gaps = np.append(np.diff(best[starts]), TOP_GAP)
+    lowest = dense[starts]
+    highest = np.append(dense[starts[1:] - 1], dense[-1])
+    place = (dense - lowest[group]).astype(np.float64)
+    span = (highest - lowest + 1)[group].astype(np.float64)
+    offsets: np.ndarray = place / span * OFFSET_SHARE * gaps[group]
+    return offsets
