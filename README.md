@@ -143,7 +143,7 @@ internal.
 | `rule_evaluation/` | `RuleEvaluator`, which scores candidate rules, and the learned `RuleSet` |
 | `acyclic/` | Length-one acyclic rules end to end: sampling, generalization, evaluation and scoring |
 | `chain/` | Internal engine counting body-chain groundings for evaluation and prediction |
-| `prediction/` | Applying rules: `RuleEvidence`, the fixed-aggregation `RulePredictor`, and `MultiRelationPredictor` |
+| `prediction/` | Applying rules: `RuleEvidence`, the fixed-aggregation `RulePredictor`, `MultiRelationPredictor`, and `LinkedPairBlocker` for benchmarks that never hold out already-linked pairs |
 | `aggregation/` | The learned aggregator: featurizers, models, training sets and `AggregatedScorer` |
 | `anytime` | Budgeted, length-by-length mining loop |
 | `evaluation` | Filtered link prediction metrics (MRR, Hits@K) and per-query ranks |
